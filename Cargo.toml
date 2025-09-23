@@ -1,0 +1,19 @@
+[package]
+name = "py-dependency-mapper"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+name = "py_dependency_mapper"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = "0.25.0"
+hex = "0.4.3"
+sha2 = "0.10.9"
+walkdir = "2.5.0"
+
+# Ruff AST
+ruff_python_ast = { git = "https://github.com/astral-sh/ruff", package = "ruff_python_ast" }
+ruff_python_parser = { git = "https://github.com/astral-sh/ruff", package = "ruff_python_parser" }

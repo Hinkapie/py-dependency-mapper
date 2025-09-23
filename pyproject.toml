@@ -1,0 +1,32 @@
+[build-system]
+requires = ["maturin>=1.9,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "py-dependency-mapper"
+dynamic = ["version"]
+description = "A high-performance Python dependency mapping tool written in Rust, powered by the Ruff parser."
+readme = "README.md"
+requires-python = ">=3.8"
+authors = [
+    { name = "Sebastian Hincapie", email = "shincapiem@gmail.com" }
+]
+license = { file = "LICENSE" }
+
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python",
+    "Programming Language :: Rust",
+    "Topic :: Software Development :: Build Tools",
+    "Topic :: Utilities",
+]
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+
+
