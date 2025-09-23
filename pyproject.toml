@@ -26,6 +26,10 @@ classifiers = [
     "Topic :: Utilities",
 ]
 
+[project.urls]
+Homepage = "https://github.com/Hinkapie/py-dependency-mapper"
+Repository = "https://github.com/Hinkapie/py-dependency-mapper"
+
 [tool.maturin]
 features = ["pyo3/extension-module"]
 
