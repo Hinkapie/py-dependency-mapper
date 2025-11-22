@@ -486,9 +486,13 @@ mod tests {
         fs::create_dir(&pkg_dir).unwrap();
 
         let found = find_dist_info_dir("requests", "2.32.5", site_packages);
-        assert_eq!(found, Some(pkg_dir));
-    }
+        
+        let found_canon = found.map(|p| fs::canonicalize(p).unwrap());
+        let pkg_dir_canon = Some(fs::canonicalize(pkg_dir).unwrap());
 
+        assert_eq!(found_canon, pkg_dir_canon);
+    }
+    
     #[test]
     fn test_find_dist_info_dir_slow_path_capitalized() {
         let dir = tempdir().unwrap();
@@ -498,7 +502,11 @@ mod tests {
         fs::create_dir(&pkg_dir).unwrap();
 
         let found = find_dist_info_dir("cairosvg", "2.7.0", site_packages);
-        assert_eq!(found, Some(pkg_dir));
+        
+        let found_canon = found.map(|p| fs::canonicalize(p).unwrap());
+        let pkg_dir_canon = Some(fs::canonicalize(pkg_dir).unwrap());
+
+        assert_eq!(found_canon, pkg_dir_canon);
     }
 
     #[test]
