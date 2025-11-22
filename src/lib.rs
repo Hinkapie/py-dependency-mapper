@@ -1,19 +1,16 @@
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyModule};
+use pyo3::types::PyDict;
 use pyo3::Bound;
-use std::collections::{HashMap, HashSet};
+use serde::Deserialize;
+use serde_json;
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use walkdir::WalkDir;
-
-use hex;
-use ruff_python_ast::visitor::{self, Visitor};
-use ruff_python_ast::Stmt;
-use ruff_python_parser::parse_module;
-use sha2::{Digest, Sha256};
-
-use helpers::*;
+mod helpers;
+use helpers::imports_from_source;
 
 #[pyclass]
 #[derive(Clone, Debug)]
@@ -21,102 +18,268 @@ struct ProjectFile {
     #[pyo3(get)]
     hash: String,
     #[pyo3(get)]
-    imports: Vec<String>,
+    project_imports: Vec<String>,
+    #[pyo3(get)]
+    stdlib_imports: Vec<String>,
+    #[pyo3(get)]
+    third_party_imports: Vec<String>,
 }
 
-fn analyze_and_dependency_map_file(
-    path: &Path,
-    source_root_path: &Path,
-    filter_prefixes: &[String],
-    dependency_map: &mut HashMap<String, ProjectFile>,
-    resolution_cache: &mut HashMap<String, Option<PathBuf>>,
-    inits_cache: &mut HashMap<String, Vec<PathBuf>>,
-) {
-    let canonical_path = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let path_str = canonical_path.to_string_lossy().into_owned();
+#[pyclass]
+#[derive(Clone, Debug)]
+struct GraphFileResult {
+    #[pyo3(get)]
+    hash: String,
+    #[pyo3(get)]
+    stdlib_imports: Vec<String>,
+    #[pyo3(get)]
+    third_party_imports: Vec<String>,
+}
 
-    if dependency_map.contains_key(&path_str) {
-        return;
+#[pyclass]
+#[derive(Clone, Debug)]
+pub struct PipPackageInfo {
+    #[pyo3(get)]
+    pub version: String,
+    #[pyo3(get)]
+    pub installed_paths: Vec<String>,
+    #[pyo3(get)]
+    pub dependencies: Vec<String>,
+}
+
+#[pyclass]
+#[derive(Clone, Debug)]
+pub struct PipMetadata {
+    #[pyo3(get)]
+    pub import_to_pip_map: HashMap<String, String>,
+    #[pyo3(get)]
+    pub pip_package_info_map: HashMap<String, PipPackageInfo>,
+    #[pyo3(get)]
+    pub extra_dependencies_map: HashMap<String, Vec<String>>,
+    #[pyo3(get)]
+    pub extra_paths_map: HashMap<String, Vec<String>>,
+}
+
+#[derive(Deserialize, Debug, Default)]
+struct ManualMappings {
+    #[serde(default)]
+    import_mappings: HashMap<String, String>,
+    #[serde(default)]
+    extra_dependencies: HashMap<String, Vec<String>>,
+    #[serde(default)]
+    extra_package_paths: HashMap<String, Vec<String>>,
+}
+
+#[derive(Deserialize, Debug)]
+struct PipdeptreePackageDetails {
+    version: String,
+    dependencies: BTreeMap<String, PipdeptreePackageDetails>,
+}
+
+struct PipAnalyzer<'a> {
+    site_packages: &'a Path,
+    import_to_pip_map: HashMap<String, String>,
+    pip_package_info_map: HashMap<String, PipPackageInfo>,
+}
+
+impl<'a> PipAnalyzer<'a> {
+    fn new(site_packages: &'a Path) -> Self {
+        PipAnalyzer {
+            site_packages,
+            import_to_pip_map: HashMap::new(),
+            pip_package_info_map: HashMap::new(),
+        }
     }
 
-    if let Ok(content_bytes) = fs::read(&canonical_path) {
-        let mut hasher = Sha256::new();
-        hasher.update(&content_bytes);
-        let hash = hex::encode(hasher.finalize());
+    fn process_package(&mut self, package_name: &str, package_details: &PipdeptreePackageDetails) {
+        if let Some(existing_info) = self.pip_package_info_map.get(package_name) {
+            if !existing_info.dependencies.is_empty() && package_details.dependencies.is_empty() {
+                return;
+            }
+        }
 
-        let mut resolved_imports = HashSet::new();
-        if let Ok(content_str) = std::str::from_utf8(&content_bytes) {
-            let import_strings = imports_from_source(content_str);
-            for module in import_strings.into_iter().filter(|m| {
-                filter_prefixes.iter().any(|prefix| m.starts_with(prefix))
-            }) {
-                let init_paths =
-                    find_package_inits_in_path_seq(&module, &source_root_path, inits_cache);
-                for p in init_paths {
-                    resolved_imports.insert(p.to_string_lossy().into_owned());
+        let mut importables = HashSet::new();
+        let mut installed_artifact_paths = HashSet::new();
+        let dependencies: Vec<String> = package_details.dependencies.keys().cloned().collect();
+
+        if let Some(dist_dir) = find_dist_info_dir(package_name, &package_details.version, self.site_packages) {
+            if let Ok(record_content) = fs::read_to_string(dist_dir.join("RECORD")) {
+                for line in record_content.lines() {
+                    if let Some(path_str) = line.split(',').next() {
+                        if path_str.contains(".dist-info/") { continue; }
+                        if let Some(top_level) = path_str.split('/').next() {
+                            if top_level.is_empty() { continue; }
+
+                            if top_level == "bin" {
+                                installed_artifact_paths.insert(path_str.to_string());
+                            } else {
+                                installed_artifact_paths.insert(top_level.to_string());
+                            }
+                        }
+                    }
                 }
-                if let Some(resolved_path) =
-                    resolve_module_in_project_seq(&module, &source_root_path, resolution_cache)
-                {
-                    resolved_imports.insert(resolved_path.to_string_lossy().into_owned());
+            }
+
+            if let Ok(top_level_content) = fs::read_to_string(dist_dir.join("top_level.txt")) {
+                for name in top_level_content.lines() {
+                    if !name.trim().is_empty() { importables.insert(name.trim().to_string()); }
+                }
+            } else if !installed_artifact_paths.is_empty() {
+                for path in &installed_artifact_paths {
+                    let import_name = path.strip_suffix(".py").unwrap_or(path);
+                    if !import_name.contains('/') {
+                        importables.insert(import_name.to_string());
+                    }
                 }
             }
         }
 
-        dependency_map.insert(
-            path_str,
-            ProjectFile {
-                hash,
-                imports: resolved_imports.into_iter().collect(),
-            },
-        );
+        for name in &importables {
+            self.import_to_pip_map.entry(name.clone()).or_insert_with(|| package_name.to_string());
+        }
+
+        let package_info = PipPackageInfo {
+            version: package_details.version.clone(),
+            installed_paths: installed_artifact_paths.into_iter().collect(),
+            dependencies,
+        };
+        self.pip_package_info_map.insert(package_name.to_string(), package_info);
+
+        for (dep_name, dep_details) in &package_details.dependencies {
+            self.process_package(dep_name, dep_details);
+        }
+    }
+
+    fn finalize(self) -> (HashMap<String, String>, HashMap<String, PipPackageInfo>) {
+        (self.import_to_pip_map, self.pip_package_info_map)
     }
 }
 
+
 #[pyfunction]
+#[pyo3(signature = (dependency_tree_json_path, site_packages_path, manual_mapping_path=None))]
+pub fn build_pip_metadata(
+    dependency_tree_json_path: &str,
+    site_packages_path: &str,
+    manual_mapping_path: Option<String>,
+) -> PyResult<PipMetadata> {
+
+    let site_packages = PathBuf::from(site_packages_path);
+
+    let json_content = fs::read_to_string(dependency_tree_json_path)?;
+    let packages: BTreeMap<String, PipdeptreePackageDetails> = serde_json::from_str(&json_content)
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+
+    let mut analyzer = PipAnalyzer::new(&site_packages);
+
+    let mut manual_import_mappings = HashMap::new();
+    let mut manual_extra_deps = HashMap::new();
+    let mut manual_extra_paths = HashMap::new();
+
+    if let Some(path_str) = manual_mapping_path {
+        let path = PathBuf::from(path_str);
+        if path.is_file() {
+            let content = fs::read_to_string(path)?;
+            let mappings: ManualMappings = toml::from_str(&content)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+            manual_import_mappings = mappings.import_mappings;
+            manual_extra_deps = mappings.extra_dependencies;
+            manual_extra_paths = mappings.extra_package_paths;
+        }
+    }
+
+    analyzer.import_to_pip_map.extend(manual_import_mappings);
+
+    for (package_name, package_details) in &packages {
+        analyzer.process_package(package_name, package_details);
+    }
+
+    let (import_map, package_info_map) = analyzer.finalize();
+
+    Ok(PipMetadata {
+        import_to_pip_map: import_map,
+        pip_package_info_map: package_info_map,
+        extra_dependencies_map: manual_extra_deps,
+        extra_paths_map: manual_extra_paths,
+    })
+}
+
+
+#[pyfunction]
+pub fn resolve_package_set(
+    direct_packages: Vec<String>,
+    pip_metadata: &Bound<'_, PyAny>,
+) -> PyResult<HashMap<String, PipPackageInfo>> {
+    let metadata: PyRef<PipMetadata> = pip_metadata.extract()?;
+    let all_packages_info = &metadata.pip_package_info_map;
+    let extra_deps_map = &metadata.extra_dependencies_map;
+    
+
+    let mut final_package_set = HashSet::new();
+    let mut processing_stack = direct_packages;
+
+    while let Some(package_name) = processing_stack.pop() {
+        if !final_package_set.insert(package_name.clone()) {
+            continue; 
+        }
+
+        if let Some(package_info) = all_packages_info.get(&package_name) {
+            for dep in &package_info.dependencies {
+                processing_stack.push(dep.clone());
+            }
+        }
+        
+        if let Some(extra_deps) = extra_deps_map.get(&package_name) {
+            for extra_dep in extra_deps {
+                processing_stack.push(extra_dep.clone());
+            }
+        }
+    }
+
+    let resolved_map = final_package_set
+        .into_iter()
+        .filter_map(|name| all_packages_info.get(&name).map(|info| (name, info.clone())))
+        .collect();
+    Ok(resolved_map)
+}
+
+#[pyfunction]
+#[pyo3(signature = (source_root, project_module_prefixes, include_paths, stdlib_list_path=None))]
 fn build_dependency_map(
     source_root: &str,
-    filter_prefixes: Vec<String>,
+    project_module_prefixes: Vec<String>,
     include_paths: Vec<String>,
+    stdlib_list_path: Option<String>,
 ) -> PyResult<HashMap<String, ProjectFile>> {
     let start_time = Instant::now();
+    let source_root_path = PathBuf::from(source_root);
+    
+    let mut project_file_map = HashMap::with_capacity(4096);
+    let mut module_resolution_cache: HashMap<String, Option<PathBuf>> = HashMap::with_capacity(1024);
+    let mut package_init_cache: HashMap<String, Vec<PathBuf>> = HashMap::with_capacity(1024);
 
-    let source_root_path = fs::canonicalize(source_root).map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyFileNotFoundError, _>(format!(
-            "Project root not found: {} ({})",
-            source_root, e
-        ))
-    })?;
-
-    let mut dependency_map = HashMap::with_capacity(4096);
-    let mut resolution_cache: HashMap<String, Option<PathBuf>> = HashMap::with_capacity(1024);
-    let mut inits_cache: HashMap<String, Vec<PathBuf>> = HashMap::with_capacity(1024);
+    let stdlib_modules = if let Some(path) = stdlib_list_path {
+        helpers::load_stdlib_from_file(&path)?
+    } else {
+        HashSet::new()
+    };
 
     for path_str in &include_paths {
-        let full_path = source_root_path.join(&path_str);
-
+        let full_path = source_root_path.join(path_str);
         if full_path.is_dir() {
             for entry in WalkDir::new(full_path).into_iter().filter_map(|e| e.ok()) {
                 let path = entry.path();
                 if path.is_file() && path.extension().map_or(false, |ext| ext == "py") {
-                    analyze_and_dependency_map_file(
-                        path,
-                        &source_root_path,
-                        &filter_prefixes,
-                        &mut dependency_map,
-                        &mut resolution_cache,
-                        &mut inits_cache,
+                    parse_file_imports(
+                        path, &source_root_path, &project_module_prefixes, &stdlib_modules,
+                        &mut project_file_map, &mut module_resolution_cache, &mut package_init_cache,
                     );
                 }
             }
         } else if full_path.is_file() {
-            analyze_and_dependency_map_file(
-                &full_path,
-                &source_root_path,
-                &filter_prefixes,
-                &mut dependency_map,
-                &mut resolution_cache,
-                &mut inits_cache,
+            parse_file_imports(
+                &full_path, &source_root_path, &project_module_prefixes, &stdlib_modules,
+                &mut project_file_map, &mut module_resolution_cache, &mut package_init_cache,
             );
         }
     }
@@ -124,31 +287,24 @@ fn build_dependency_map(
     let duration = start_time.elapsed();
     println!(
         "✅ Dependency tree built: {} files in {:.4}s | Include Paths: {:?} | Filter for: {:?}",
-        dependency_map.len(),
+        project_file_map.len(),
         duration.as_secs_f64(),
         include_paths,
-        filter_prefixes,
+        project_module_prefixes,
     );
-    Ok(dependency_map)
+    
+    Ok(project_file_map)
 }
 
 #[pyfunction]
 fn get_dependency_graph(
     dependency_map: &Bound<'_, PyDict>,
     entry_point: &str,
-) -> PyResult<HashMap<String, String>> {
-    let canonical_handler = fs::canonicalize(entry_point)
-        .map_err(|e| {
-            PyErr::new::<pyo3::exceptions::PyFileNotFoundError, _>(format!(
-                "Handler file not found: {} ({})",
-                entry_point, e
-            ))
-        })?
-        .to_string_lossy()
-        .into_owned();
-
-    let mut final_deps: HashMap<String, String> = HashMap::with_capacity(64);
-    let mut stack: Vec<String> = vec![canonical_handler];
+) -> PyResult<HashMap<String, GraphFileResult>> {
+    let entry_point_path = fs::canonicalize(entry_point)?.to_string_lossy().into_owned();
+    
+    let mut resolved_file_map = HashMap::with_capacity(64);
+    let mut stack: Vec<String> = vec![entry_point_path];
     let mut seen: HashSet<String> = HashSet::with_capacity(128);
 
     while let Some(current_path) = stack.pop() {
@@ -157,113 +313,304 @@ fn get_dependency_graph(
         }
         if let Some(info_obj) = dependency_map.get_item(&current_path)? {
             let info = info_obj.extract::<PyRef<ProjectFile>>()?;
-            final_deps.insert(current_path, info.hash.clone());
-            for import_path in &info.imports {
+            let result = GraphFileResult {
+                hash: info.hash.clone(),
+                stdlib_imports: info.stdlib_imports.clone(),
+                third_party_imports: info.third_party_imports.clone(),
+            };
+            resolved_file_map.insert(current_path, result);
+            for import_path in &info.project_imports {
                 stack.push(import_path.clone());
             }
         }
     }
-    Ok(final_deps)
+    Ok(resolved_file_map)
 }
 
 #[pymodule]
-fn py_dependency_mapper<'py>(_py: Python<'py>, m: &Bound<'py, PyModule>) -> PyResult<()> {
+fn py_dependency_mapper<'py>(_py: Python<'py>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ProjectFile>()?;
+    m.add_class::<GraphFileResult>()?;
+    m.add_class::<PipMetadata>()?;
+    m.add_class::<PipPackageInfo>()?;
     m.add_function(wrap_pyfunction!(build_dependency_map, m)?)?;
     m.add_function(wrap_pyfunction!(get_dependency_graph, m)?)?;
+    m.add_function(wrap_pyfunction!(build_pip_metadata, m)?)?;
+    m.add_function(wrap_pyfunction!(resolve_package_set, m)?)?;
     Ok(())
 }
 
-mod helpers {
-    use super::*;
+fn normalize_pkg_name(name: &str) -> String {
+    name.to_lowercase().replace('-', "_")
+}
 
-    pub(super) fn find_package_inits_in_path_seq(
-        module: &str,
-        source_root: &Path,
-        cache: &mut HashMap<String, Vec<PathBuf>>,
-    ) -> Vec<PathBuf> {
-        if let Some(cached) = cache.get(module) {
-            return cached.clone();
+fn find_dist_info_dir(
+    package_name: &str,
+    version: &str,
+    site_packages: &Path,
+) -> Option<PathBuf> {
+    
+    let mut possible_names = HashSet::new();
+    
+    possible_names.insert(package_name.to_string());
+    possible_names.insert(package_name.replace('-', "_"));
+    possible_names.insert(package_name.replace('-', "."));
+
+    let mut c = package_name.chars();
+    let capitalized_name = match c.next() {
+        None => package_name.to_string(),
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+    };
+    possible_names.insert(capitalized_name.clone());
+    possible_names.insert(capitalized_name.replace('-', "_"));
+    possible_names.insert(capitalized_name.replace('-', "."));
+
+    for name in possible_names {
+        let dir_name = format!("{}-{}.dist-info", name, version);
+        let path = site_packages.join(&dir_name);
+        if path.is_dir() {
+            return Some(path);
         }
-        let mut inits = Vec::new();
-        let segments: Vec<&str> = module.split('.').collect();
-        if segments.len() > 1 {
-            let mut current_path = source_root.to_path_buf();
-            for segment in &segments[..segments.len() - 1] {
-                current_path.push(segment);
-                let init_path = current_path.join("__init__.py");
-                if init_path.exists() {
-                    inits.push(init_path);
+    }
+
+    let normalized_input_name = normalize_pkg_name(package_name);
+    let version_suffix = format!("-{}.dist-info", version); 
+
+    let entries = match fs::read_dir(site_packages) {
+        Ok(entries) => entries,
+        Err(_) => return None, 
+    };
+    
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if !path.is_dir() { continue; }
+
+        let dir_name_str = match entry.file_name().into_string() {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+
+        if dir_name_str.ends_with(&version_suffix) {
+            
+            if let Some(actual_name) = dir_name_str.strip_suffix(&version_suffix) {
+                
+                let normalized_actual_name = normalize_pkg_name(actual_name);
+
+                if normalized_actual_name == normalized_input_name {
+                    return Some(path);
                 }
             }
         }
-        cache.insert(module.to_string(), inits.clone());
-        inits
     }
+    None
+}
 
-    pub(super) fn resolve_module_in_project_seq(
-        module: &str,
-        source_root: &Path,
-        cache: &mut HashMap<String, Option<PathBuf>>,
-    ) -> Option<PathBuf> {
-        if let Some(cached) = cache.get(module) {
-            return cached.clone();
-        }
-        let rel_path = module.replace('.', "/");
-        let result = {
-            let pkg_init = source_root.join(&rel_path).join("__init__.py");
-            if pkg_init.exists() {
-                Some(pkg_init)
-            } else {
-                let py_file = source_root.join(&rel_path).with_extension("py");
-                if py_file.exists() {
-                    Some(py_file)
+fn parse_file_imports(
+    path: &Path,
+    source_root_path: &Path,
+    project_module_prefixes: &[String],
+    stdlib_modules: &HashSet<String>,
+    project_file_map: &mut HashMap<String, ProjectFile>,
+    module_resolution_cache: &mut HashMap<String, Option<PathBuf>>,
+    package_init_cache: &mut HashMap<String, Vec<PathBuf>>,
+) {
+    let path_str = path.to_string_lossy().into_owned();
+    if project_file_map.contains_key(&path_str) { return; }
+
+    if let Ok(content_bytes) = fs::read(path) {
+        let mut hasher = Sha256::new();
+        hasher.update(&content_bytes);
+        let hash = hex::encode(hasher.finalize());
+
+        let mut resolved_project_imports = HashSet::new();
+        let mut stdlib_imports = HashSet::new();
+        let mut third_party_imports = HashSet::new();
+
+        if let Ok(content_str) = std::str::from_utf8(&content_bytes) {
+            let import_strings = imports_from_source(content_str);
+            for module in import_strings {
+                let base_module = module.split('.').next().unwrap_or(&module);
+
+                if project_module_prefixes.iter().any(|prefix| module.starts_with(prefix)) {
+                    for p in helpers::find_package_inits_in_path_seq(&module, source_root_path, package_init_cache) {
+                        resolved_project_imports.insert(p.to_string_lossy().into_owned());
+                    }
+                    if let Some(p) = helpers::resolve_module_in_project_seq(&module, source_root_path, module_resolution_cache) {
+                        resolved_project_imports.insert(p.to_string_lossy().into_owned());
+                    }
+                } else if stdlib_modules.contains(base_module) {
+                    stdlib_imports.insert(base_module.to_string());
                 } else {
-                    None
+                    third_party_imports.insert(base_module.to_string());
                 }
             }
-        };
-        cache.insert(module.to_string(), result.clone());
-        result
+        }
+        project_file_map.insert(path_str, ProjectFile {
+            hash,
+            project_imports: resolved_project_imports.into_iter().collect(),
+            stdlib_imports: stdlib_imports.into_iter().collect(),
+            third_party_imports: third_party_imports.into_iter().collect(),
+        });
+    }
+}
+
+
+
+
+
+
+
+
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::{self, File};
+    use std::io::Write;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_normalize_pkg_name() {
+        assert_eq!(normalize_pkg_name("CairoSVG"), "cairosvg");
+        assert_eq!(normalize_pkg_name("google-api-core"), "google_api_core");
+        assert_eq!(normalize_pkg_name("Babel"), "babel");
     }
 
-    pub(super) fn imports_from_source(source: &str) -> Vec<String> {
-        let parsed = match parse_module(source) {
-            Ok(p) => p,
-            Err(_) => return Vec::new(),
-        };
-        #[derive(Default)]
-        struct ImportVisitor {
-            imports: Vec<String>,
-        }
-        impl<'ast> Visitor<'ast> for ImportVisitor {
-            fn visit_stmt(&mut self, stmt: &'ast Stmt) {
-                match stmt {
-                    Stmt::Import(i) => {
-                        for a in &i.names {
-                            self.imports.push(a.name.to_string());
-                        }
-                    }
-                    Stmt::ImportFrom(i) => {
-                        if i.level == 0 {
-                            if let Some(m) = &i.module {
-                                self.imports.push(m.to_string());
-                                for a in &i.names {
-                                    if a.name.to_string() != "*" {
-                                        self.imports.push(format!("{}.{}", m, a.name));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-                visitor::walk_stmt(self, stmt);
-            }
-        }
-        let mut visitor = ImportVisitor::default();
-        let module = parsed.into_syntax();
-        visitor.visit_body(&module.body);
-        visitor.imports
+    #[test]
+    fn test_find_dist_info_dir_fast_path() {
+        let dir = tempdir().unwrap();
+        let site_packages = dir.path();
+        
+        let pkg_dir = site_packages.join("requests-2.32.5.dist-info");
+        fs::create_dir(&pkg_dir).unwrap();
+
+        let found = find_dist_info_dir("requests", "2.32.5", site_packages);
+        assert_eq!(found, Some(pkg_dir));
     }
+
+    #[test]
+    fn test_find_dist_info_dir_slow_path_capitalized() {
+        let dir = tempdir().unwrap();
+        let site_packages = dir.path();
+
+        let pkg_dir = site_packages.join("CairoSVG-2.7.0.dist-info");
+        fs::create_dir(&pkg_dir).unwrap();
+
+        let found = find_dist_info_dir("cairosvg", "2.7.0", site_packages);
+        assert_eq!(found, Some(pkg_dir));
+    }
+
+    #[test]
+    fn test_find_dist_info_dir_not_found() {
+        let dir = tempdir().unwrap();
+        let site_packages = dir.path();
+        
+        let found = find_dist_info_dir("nonexistent", "1.0.0", site_packages);
+        assert_eq!(found, None);
+    }
+
+    #[test]
+    fn test_pip_analyzer_process_package_with_record() {
+        let dir = tempdir().unwrap();
+        let site_packages = dir.path();
+
+        let dist_info = site_packages.join("test_pkg-1.0.0.dist-info");
+        fs::create_dir(&dist_info).unwrap();
+
+        let record_path = dist_info.join("RECORD");
+        let mut record_file = File::create(record_path).unwrap();
+        writeln!(record_file, "test_pkg/__init__.py,sha256=...,100").unwrap();
+        writeln!(record_file, "bin/test-cli,sha256=...,200").unwrap();
+        writeln!(record_file, "test_pkg-1.0.0.dist-info/METADATA,sha256=...,300").unwrap();
+
+        let mut analyzer = PipAnalyzer::new(site_packages);
+        let details = PipdeptreePackageDetails {
+            version: "1.0.0".to_string(),
+            dependencies: BTreeMap::new(),
+        };
+
+        analyzer.process_package("test-pkg", &details);
+
+        let info = analyzer.pip_package_info_map.get("test-pkg").unwrap();
+        assert_eq!(info.version, "1.0.0");
+        assert!(info.installed_paths.contains(&"test_pkg".to_string()));
+        assert!(info.installed_paths.contains(&"bin/test-cli".to_string()));
+        assert!(!info.installed_paths.iter().any(|p| p.contains(".dist-info")));
+        assert_eq!(analyzer.import_to_pip_map.get("test_pkg"), Some(&"test-pkg".to_string()));
+    }
+
+    #[test]
+    fn test_recursive_dependency_analysis() {
+        let dir = tempdir().unwrap();
+        let site_packages = dir.path();
+
+        let setup_pkg = |name: &str, version: &str| {
+            let dist = site_packages.join(format!("{}-{}.dist-info", name, version));
+            fs::create_dir(&dist).unwrap();
+            let mut record = File::create(dist.join("RECORD")).unwrap();
+            writeln!(record, "{}/__init__.py,sha256=...,100", name).unwrap();
+        };
+
+        setup_pkg("pkg_a", "1.0");
+        setup_pkg("pkg_b", "2.0");
+        setup_pkg("pkg_c", "3.0");
+
+        let deps_c = BTreeMap::new(); 
+        let details_c = PipdeptreePackageDetails { version: "3.0".to_string(), dependencies: deps_c };
+
+        let mut deps_b = BTreeMap::new();
+        deps_b.insert("pkg_c".to_string(), details_c); 
+        let details_b = PipdeptreePackageDetails { version: "2.0".to_string(), dependencies: deps_b };
+
+        let mut deps_a_real = BTreeMap::new();
+        deps_a_real.insert("pkg_b".to_string(), details_b);
+        
+        let details_a = PipdeptreePackageDetails { version: "1.0".to_string(), dependencies: deps_a_real };
+
+        let mut analyzer = PipAnalyzer::new(site_packages);
+    
+        analyzer.process_package("pkg_a", &details_a);
+        assert!(analyzer.pip_package_info_map.contains_key("pkg_a"));
+        assert!(analyzer.pip_package_info_map.contains_key("pkg_b"));
+        assert!(analyzer.pip_package_info_map.contains_key("pkg_c"));
+        assert_eq!(analyzer.pip_package_info_map.get("pkg_c").unwrap().version, "3.0");
+    }
+
+    #[test]
+    fn test_build_pip_metadata_with_manual_mappings() {
+        let dir = tempdir().unwrap();
+        let site_packages = dir.path();
+        
+        let json_path = dir.path().join("tree.json");
+        fs::write(&json_path, "{}").unwrap(); 
+
+        let toml_path = dir.path().join("mappings.toml");
+        let toml_content = r#"
+            [import_mappings]
+            "slack" = "slackclient"
+
+            [extra_dependencies]
+            "pydantic" = ["email-validator"]
+
+            [extra_package_paths]
+            "gremlinpython" = ["bin", "lib"]
+        "#;
+        fs::write(&toml_path, toml_content).unwrap();
+
+        let metadata = build_pip_metadata(
+            json_path.to_str().unwrap(),
+            site_packages.to_str().unwrap(),
+            Some(toml_path.to_str().unwrap().to_string())
+        ).unwrap();
+
+        assert_eq!(metadata.import_to_pip_map.get("slack"), Some(&"slackclient".to_string()));
+
+        let extra_deps = metadata.extra_dependencies_map.get("pydantic").unwrap();
+        assert!(extra_deps.contains(&"email-validator".to_string()));
+
+        let extra_paths = metadata.extra_paths_map.get("gremlinpython").unwrap();
+        assert!(extra_paths.contains(&"bin".to_string()));
+        assert!(extra_paths.contains(&"lib".to_string()));
+    }    
 }
