@@ -4,59 +4,32 @@ on:
   push:
     branches:
       - main
-    tags:
-      - 'v*'
   pull_request:
   workflow_dispatch:
 
-permissions:
-  contents: read
-
 jobs:
-  build:
-    name: Build wheels on ${{ matrix.os }} for Python ${{ matrix.python-version }}
+  test_and_build:
+    name: Test & Verify Build on ${{ matrix.os }} (Py ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-13, macos-14]
-        python-version: ['3.8', '3.9', '3.10', '3.11', '3.12', '3.13']
+        python-version: ['3.8', '3.9', '3.10', '3.11', '3.12', '3.13', '3.14']
 
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      
-      - name: Build wheels
+          allow-prereleases: true
+
+      - name: Run Rust tests
+        run: cargo test
+
+      - name: Verify Build (Dry Run)
         uses: PyO3/maturin-action@v1
         with:
-          args: --release --out dist
-
-      - name: Upload wheels
-        uses: actions/upload-artifact@v4
-        with:
-          name: wheels-${{ matrix.os }}-py${{ matrix.python-version }}
-          path: dist
-
-  release:
-    name: Release to PyPI
-    runs-on: ubuntu-latest
-    environment: release
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags')
-    needs: build
-    permissions:
-      id-token: write 
-
-    steps:
-      - name: Download all wheels
-        uses: actions/download-artifact@v4
-        with:
-          path: dist 
-      
-      - name: Publish to PyPI
-        uses: PyO3/maturin-action@v1
-        env:
-          MATURIN_PYPI_TRUSTED_PUBLISHER: __token__
-        with:
-          command: upload
-          args: --non-interactive dist/**/*.whl
+          command: build
+          args: --release
