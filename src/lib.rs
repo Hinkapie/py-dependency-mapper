@@ -71,9 +71,9 @@ struct ManualMappings {
 }
 
 #[derive(Deserialize, Debug)]
-struct PipdeptreePackageDetails {
+struct PackageDetails {
     version: String,
-    dependencies: BTreeMap<String, PipdeptreePackageDetails>,
+    dependencies: BTreeMap<String, PackageDetails>,
 }
 
 struct PipAnalyzer<'a> {
@@ -91,7 +91,7 @@ impl<'a> PipAnalyzer<'a> {
         }
     }
 
-    fn process_package(&mut self, package_name: &str, package_details: &PipdeptreePackageDetails) {
+    fn process_package(&mut self, package_name: &str, package_details: &PackageDetails) {
         if let Some(existing_info) = self.pip_package_info_map.get(package_name) {
             if !existing_info.dependencies.is_empty() && package_details.dependencies.is_empty() {
                 return;
@@ -167,7 +167,7 @@ pub fn build_pip_metadata(
     let site_packages = PathBuf::from(site_packages_path);
 
     let json_content = fs::read_to_string(dependency_tree_json_path)?;
-    let packages: BTreeMap<String, PipdeptreePackageDetails> = serde_json::from_str(&json_content)
+    let packages: BTreeMap<String, PackageDetails> = serde_json::from_str(&json_content)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
 
     let mut analyzer = PipAnalyzer::new(&site_packages);
@@ -533,7 +533,7 @@ mod tests {
         writeln!(record_file, "test_pkg-1.0.0.dist-info/METADATA,sha256=...,300").unwrap();
 
         let mut analyzer = PipAnalyzer::new(site_packages);
-        let details = PipdeptreePackageDetails {
+        let details = PackageDetails {
             version: "1.0.0".to_string(),
             dependencies: BTreeMap::new(),
         };
@@ -565,16 +565,16 @@ mod tests {
         setup_pkg("pkg_c", "3.0");
 
         let deps_c = BTreeMap::new(); 
-        let details_c = PipdeptreePackageDetails { version: "3.0".to_string(), dependencies: deps_c };
+        let details_c = PackageDetails { version: "3.0".to_string(), dependencies: deps_c };
 
         let mut deps_b = BTreeMap::new();
         deps_b.insert("pkg_c".to_string(), details_c); 
-        let details_b = PipdeptreePackageDetails { version: "2.0".to_string(), dependencies: deps_b };
+        let details_b = PackageDetails { version: "2.0".to_string(), dependencies: deps_b };
 
         let mut deps_a_real = BTreeMap::new();
         deps_a_real.insert("pkg_b".to_string(), details_b);
         
-        let details_a = PipdeptreePackageDetails { version: "1.0".to_string(), dependencies: deps_a_real };
+        let details_a = PackageDetails { version: "1.0".to_string(), dependencies: deps_a_real };
 
         let mut analyzer = PipAnalyzer::new(site_packages);
     
