@@ -15,19 +15,21 @@ This makes it ideal for packaging (e.g., serverless deployments), dependency aud
 
 ## Features
 
-:zap: **High performance** thanks to the Ruff parser.
+⚡ **High performance** thanks to the Ruff parser.
 
-:jigsaw: **Two-phase architecture**: indexing and subgraph extraction per entry point.
+🧩 **Two-phase architecture**: indexing and subgraph extraction per entry point.
 
-:dart: **Prefix filtering** (e.g., `["my_app"]`) to reduce noise.
+🎯 **Prefix filtering** (e.g., `["my_app"]`) to reduce noise.
 
-:package: **Complete pip package analysis** with automatic dependency resolution.
+📦 **Complete pip package analysis** with automatic dependency resolution.
 
-:customs: **Customizable manual mappings** via TOML files.
+🛃 **Customizable manual mappings** via TOML files.
 
-:snake: **Python API** and CLI utilities.
+🔍 **Impact Analysis** (Reverse Lookups): Instantly find which files depend on a specific module (ideal for Smart Testing).
 
-:rocket: **CI/CD friendly** — designed for large projects with hundreds or thousands of files.
+🐍 **Python API** and CLI utilities.
+
+🚀 **CI/CD friendly** — designed for large projects with hundreds or thousands of files.
 
 ---
 
@@ -97,6 +99,30 @@ for path, file_info in dependency_graph.items():
     print(f"  Hash: {file_info.hash}")
     print(f"  Stdlib imports: {file_info.stdlib_imports}")
     print(f"  Third party imports: {file_info.third_party_imports}")
+
+# --- PHASE 3: Impact Analysis (Reverse Lookup) ---
+# Ideal for CI/CD: Determine which tests to run based on changed files.
+# If you modify 'utils.py', this tells you exactly which files import it (recursively).
+# Accepts a LIST of changed files for batch processing.
+
+changed_files = [
+    "/path/to/project/my_app/utils.py",
+    "/path/to/project/my_app/main.py"
+]
+print(f"\nCalculating impact for changes in: {changed_files}")
+
+# Returns a Set of file paths that depend on ANY of the changed files
+impacted_files = py_dependency_mapper.find_dependents(
+    dependency_map=dependency_map,
+    changed_file_paths=changed_files
+)
+
+print(f"This change affects {len(impacted_files)} files:")
+for path in impacted_files:
+    print(f"  -> {path}")
+
+# Example CI Logic:
+# tests_to_run = [f for f in impacted_files if f.startswith("tests/") or f.endswith("_test.py")]
 
 ```
 ---
@@ -218,7 +244,7 @@ For cases where automatic detection is not sufficient, you can use a TOML file f
 "gremlinpython" = ["bin", "lib"]
 
 ```
-## :book: API Reference
+## 📖 API Reference
 
 ```python
 build_dependency_map(
@@ -231,15 +257,15 @@ build_dependency_map(
 
 Scans the project and builds the dependency map.
 
-**source_root**: Absolute path to the root of your source code.  
+* **source_root**: Absolute path to the root of your source code.  
 
-**project_module_prefixes**: A list of module prefixes to include in the analysis (e.g., `["my_app"]`).  
+* **project_module_prefixes**: A list of module prefixes to include in the analysis (e.g., `["my_app"]`).  
 
-**include_paths**: A list of directories or files (relative to `source_root`) to begin the scan from.
+* **include_paths**: A list of directories or files (relative to `source_root`) to begin the scan from.
 
-**stdlib_list_path**: Optional path to a file containing standard library module names.
+* **stdlib_list_path**: Optional path to a file containing standard library module names.
 
-**returns**: A dictionary mapping file paths to `ProjectFile` objects.  
+* **returns**: A dictionary mapping file paths to `ProjectFile` objects.  
 
 ---
 
@@ -252,11 +278,26 @@ get_dependency_graph(
 
 From the pre-built map, gets the dependency subgraph for a specific entry point.
 
-**dependency_map**: The dictionary returned by `build_dependency_map`.  
+* **dependency_map**: The dictionary returned by `build_dependency_map`.  
 
-**entry_point**: The absolute path to the initial `.py` file.  
+* **entry_point**: The absolute path to the initial `.py` file.  
 
-**returns**: A dictionary mapping file paths to `GraphFileResult` objects.  
+* **returns**: A dictionary mapping file paths to `GraphFileResult` objects.  
+
+---
+
+```python
+find_dependents(
+    dependency_map: Dict,
+    changed_file_paths: List[str]
+) -> Set[str]
+```
+
+Performs a reverse dependency lookup. Identifies all files in the project that depend on (import) any of the specified files, either directly or indirectly (transitively)
+
+* **dependency_map**: The dictionary returned by `build_dependency_map`.
+* **changed_file_paths**: A list of absolute paths to the files that were modified.
+* **returns**: A Set of strings containing the absolute paths of all files that are impacted by the changes.
 
 ---
 
@@ -272,13 +313,13 @@ build_pip_metadata(
 
 Builds metadata for installed pip packages from a dependency tree JSON file.
 
-**dependency_tree_json_path**: Path to JSON file containing the dependency tree.
+* **dependency_tree_json_path**: Path to JSON file containing the dependency tree.
 
-**site_packages_path**: Path to the site-packages directory.
+* **site_packages_path**: Path to the site-packages directory.
 
-**manual_mapping_path**: Optional path to TOML file with manual mappings.
+* **manual_mapping_path**: Optional path to TOML file with manual mappings.
 
-**returns**: A `PipMetadata` object containing package information and mappings.
+* **returns**: A `PipMetadata` object containing package information and mappings.
 
 ```python
 resolve_package_set(
@@ -289,11 +330,11 @@ resolve_package_set(
 
 Resolves all dependencies for a set of direct packages.
 
-**direct_packages**: List of package names to resolve dependencies for.
+* **direct_packages**: List of package names to resolve dependencies for.
 
-**pip_metadata**: The `PipMetadata` object from `build_pip_metadata`.
+* **pip_metadata**: The `PipMetadata` object from `build_pip_metadata`.
 
-**returns**: A dictionary mapping package names to `PipPackageInfo` objects.
+* **returns**: A dictionary mapping package names to `PipPackageInfo` objects.
 
 ---
 
@@ -304,49 +345,49 @@ Resolves all dependencies for a set of direct packages.
 
 Contains information about a Python source file:
 
-`hash`: SHA256 hash of the file content.
+* `hash`: SHA256 hash of the file content.
 
-`project_imports`: List of imported project modules (file paths).
+* `project_imports`: List of imported project modules (file paths).
 
-`stdlib_imports`: List of imported standard library modules.
+* `stdlib_imports`: List of imported standard library modules.
 
-`third_party_imports`: List of imported third-party packages.
+* `third_party_imports`: List of imported third-party packages.
 
 
 
 ### PipMetadata
 Contains pip package analysis results:
 
-`import_to_pip_map`: Mapping from import names to pip package names.
+* `import_to_pip_map`: Mapping from import names to pip package names.
 
-`pip_package_info_map`: Mapping from pip package names to package information.
+* `pip_package_info_map`: Mapping from pip package names to package information.
 
-`extra_dependencies_map`: Manual additional dependencies from TOML.
+* `extra_dependencies_map`: Manual additional dependencies from TOML.
 
-`extra_paths_map`: Manual additional paths from TOML.
+* `extra_paths_map`: Manual additional paths from TOML.
 
 
 
 ### PipPackageInfo
 Information about a specific pip package:
 
-`version`: Package version string.
+* `version`: Package version string.
 
-`installed_paths`: List of installed file/directory paths.
+* `installed_paths`: List of installed file/directory paths.
 
-`dependencies`: List of direct dependency package names
+* `dependencies`: List of direct dependency package names
 
 ---
 
 
-## :scroll: License
+## 📜 License
 
 This project is licensed under the **MIT License**.  
 See the [LICENSE](./LICENSE) file for more details.
 
 ---
 
-## :raised_hands: Acknowledgements
+## 🙌 Acknowledgements
 
 This tool would not be possible without the incredible work of the team behind the **Ruff** project,  
 whose high-performance parser is the heart of this analyzer.  

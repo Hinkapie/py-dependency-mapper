@@ -327,6 +327,43 @@ fn get_dependency_graph(
     Ok(resolved_file_map)
 }
 
+#[pyfunction]
+fn find_dependents(
+    dependency_map: &Bound<'_, PyDict>,
+    changed_file_paths: Vec<String>,
+) -> PyResult<HashSet<String>> {
+    
+    let mut reverse_graph: HashMap<String, Vec<String>> = HashMap::new();
+    
+    for (importer_path, value) in dependency_map {
+        let importer = importer_path.extract::<String>()?;
+        let project_file: PyRef<ProjectFile> = value.extract()?;
+        
+        for dependency in &project_file.project_imports {
+            reverse_graph
+                .entry(dependency.clone())
+                .or_default()
+                .push(importer.clone());
+        }
+    }
+
+    let mut dependents = HashSet::new();
+    
+    let mut stack = changed_file_paths; 
+
+    while let Some(current_file) = stack.pop() {
+        if let Some(consumers) = reverse_graph.get(&current_file) {
+            for consumer in consumers {
+                if dependents.insert(consumer.clone()) {
+                    stack.push(consumer.clone());
+                }
+            }
+        }
+    }
+
+    Ok(dependents)
+}
+
 #[pymodule]
 fn py_dependency_mapper<'py>(_py: Python<'py>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ProjectFile>()?;
@@ -337,6 +374,7 @@ fn py_dependency_mapper<'py>(_py: Python<'py>, m: &Bound<'_, PyModule>) -> PyRes
     m.add_function(wrap_pyfunction!(get_dependency_graph, m)?)?;
     m.add_function(wrap_pyfunction!(build_pip_metadata, m)?)?;
     m.add_function(wrap_pyfunction!(resolve_package_set, m)?)?;
+    m.add_function(wrap_pyfunction!(find_dependents, m)?)?;
     Ok(())
 }
 
@@ -469,6 +507,41 @@ mod tests {
     use std::fs::{self, File};
     use std::io::Write;
     use tempfile::tempdir;
+    use pyo3::types::PyDict;
+   
+    fn mock_file(py: Python, imports: Vec<&str>) -> PyObject {
+        let file = ProjectFile {
+            hash: "dummy".to_string(),
+            project_imports: imports.iter().map(|s| s.to_string()).collect(),
+            stdlib_imports: vec![],
+            third_party_imports: vec![],
+        };
+        Py::new(py, file).unwrap().into_any()
+    }
+
+    #[test]
+    fn test_find_dependents_logic() {
+        pyo3::prepare_freethreaded_python();
+        
+        Python::with_gil(|py| {
+            let map = PyDict::new(py);
+
+            map.set_item("file_a.py", mock_file(py, vec!["file_b.py"])).unwrap();
+            map.set_item("file_b.py", mock_file(py, vec![])).unwrap();
+            
+            map.set_item("file_c.py", mock_file(py, vec!["file_d.py"])).unwrap();
+            map.set_item("file_d.py", mock_file(py, vec![])).unwrap();
+
+            let result = find_dependents(&map, vec![
+                "file_b.py".to_string(), 
+                "file_d.py".to_string()
+            ]).unwrap();
+
+            assert!(result.contains("file_a.py"));
+            assert!(result.contains("file_c.py"));
+            assert_eq!(result.len(), 2);
+        });
+    }
 
     #[test]
     fn test_normalize_pkg_name() {
