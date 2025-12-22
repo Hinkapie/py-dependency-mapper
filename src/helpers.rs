@@ -1,6 +1,6 @@
 use pyo3::prelude::*;
 use ruff_python_ast::visitor::{self, Visitor};
-use ruff_python_ast::Stmt;
+use ruff_python_ast::{Stmt, Expr};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -71,30 +71,53 @@ pub(super) fn resolve_module_in_project_seq(
     result
 }
 
+fn get_dotted_name(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Name(name) => Some(name.id.to_string()),
+        Expr::Attribute(attr) => {
+            let base = get_dotted_name(&attr.value)?;
+            Some(format!("{}.{}", base, attr.attr))
+        }
+        _ => None,
+    }
+}
+
 pub(super) fn imports_from_source(source: &str) -> Vec<String> {
     let parsed = match ruff_python_parser::parse_module(source) {
         Ok(p) => p,
         Err(_) => return Vec::new(),
     };
+
     #[derive(Default)]
-    struct ImportVisitor {
-        imports: Vec<String>,
+    struct ImportAndUsageVisitor {
+        imports: HashSet<String>,
+        aliases: HashMap<String, String>,
     }
-    impl<'ast> Visitor<'ast> for ImportVisitor {
+
+    impl<'ast> Visitor<'ast> for ImportAndUsageVisitor {
         fn visit_stmt(&mut self, stmt: &'ast Stmt) {
             match stmt {
                 Stmt::Import(i) => {
                     for a in &i.names {
-                        self.imports.push(a.name.to_string());
+                        self.imports.insert(a.name.to_string());
+                        if let Some(asname) = &a.asname {
+                            self.aliases.insert(asname.to_string(), a.name.to_string());
+                        }
                     }
                 }
                 Stmt::ImportFrom(i) => {
                     if i.level == 0 {
                         if let Some(m) = &i.module {
-                            self.imports.push(m.to_string());
+                            self.imports.insert(m.to_string());
                             for a in &i.names {
                                 if a.name.to_string() != "*" {
-                                    self.imports.push(format!("{}.{}", m, a.name));
+                                    let full_name = format!("{}.{}", m, a.name);
+                                    self.imports.insert(full_name.clone());
+                                    if let Some(asname) = &a.asname {
+                                        self.aliases.insert(asname.to_string(), full_name);
+                                    } else {
+                                        self.aliases.insert(a.name.to_string(), full_name);
+                                    }
                                 }
                             }
                         }
@@ -104,21 +127,30 @@ pub(super) fn imports_from_source(source: &str) -> Vec<String> {
             }
             visitor::walk_stmt(self, stmt);
         }
+
+        fn visit_expr(&mut self, expr: &'ast Expr) {
+            match expr {
+                Expr::Attribute(attr) => {
+                    if let Some(base_name) = get_dotted_name(&attr.value) {
+                        let resolved_base = self.aliases.get(&base_name).unwrap_or(&base_name);
+                        if self.imports.contains(resolved_base) || self.aliases.contains_key(&base_name) {
+                            let detected_usage = format!("{}.{}", resolved_base, attr.attr);
+                            self.imports.insert(detected_usage);
+                        }
+                    }
+                }
+                _ => {}
+            }
+            visitor::walk_expr(self, expr);
+        }
     }
-    let mut visitor = ImportVisitor::default();
+
+    let mut visitor = ImportAndUsageVisitor::default();
     let module = parsed.into_syntax();
     visitor.visit_body(&module.body);
-    visitor.imports
+    
+    visitor.imports.into_iter().collect()
 }
-
-
-
-
-
-
-
-
-
 
 #[cfg(test)]
 mod tests {
@@ -159,6 +191,29 @@ import my_package.module
         let source_invalid = "import "; 
         let imports = imports_from_source(source_invalid);
         assert!(imports.is_empty(), "Should return empty list on syntax error");
+    }
+
+    #[test]
+    fn test_imports_from_source_attribute_usage() {
+        let source_code = r#"
+import pydantic.v1 as pydantic
+import openpyxl.drawing.image
+
+class User:
+    # usage with alias
+    email: pydantic.EmailStr
+    
+# direct usage of deep module
+img = openpyxl.drawing.image.Image('test.png')
+        "#;
+        
+        let imports = imports_from_source(source_code);
+        let imports_set: HashSet<_> = imports.into_iter().collect();
+
+        assert!(imports_set.contains("pydantic.v1.EmailStr"));
+        assert!(imports_set.contains("openpyxl.drawing.image.Image"));
+        assert!(imports_set.contains("pydantic.v1"));
+        assert!(imports_set.contains("openpyxl.drawing.image"));
     }
 
     #[test]
