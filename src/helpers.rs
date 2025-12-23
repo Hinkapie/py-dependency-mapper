@@ -71,7 +71,6 @@ pub(super) fn resolve_module_in_project_seq(
     result
 }
 
-// Helper function to flatten nested attributes: a.b.c -> "a.b.c"
 fn get_dotted_name(expr: &Expr) -> Option<String> {
     match expr {
         Expr::Name(name) => Some(name.id.to_string()),
