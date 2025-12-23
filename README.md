@@ -238,6 +238,11 @@ For cases where automatic detection is not sufficient, you can use a TOML file f
 "fastapi" = ["uvicorn", "python-multipart"]
 "pydantic" = ["email-validator"]
 
+# Trigger dependencies only when specific modules or attributes are imported in the code.
+# Supports hierarchical matching: "openpyxl.drawing" matches "openpyxl.drawing.image.Image".
+[conditional_dependencies]
+"openpyxl.drawing" = ["pillow"]
+
 # Additional package paths
 [extra_package_paths]
 "tensorflow" = ["bin", "include", "lib"]
@@ -365,6 +370,8 @@ Contains pip package analysis results:
 * `extra_dependencies_map`: Manual additional dependencies from TOML.
 
 * `extra_paths_map`: Manual additional paths from TOML.
+
+* `conditional_dependencies_map`: Manual conditional dependencies triggered by specific import prefixes.
 
 
 

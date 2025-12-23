@@ -58,6 +58,8 @@ pub struct PipMetadata {
     pub extra_dependencies_map: HashMap<String, Vec<String>>,
     #[pyo3(get)]
     pub extra_paths_map: HashMap<String, Vec<String>>,
+    #[pyo3(get)]
+    pub conditional_dependencies_map: HashMap<String, Vec<String>>,
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -68,6 +70,8 @@ struct ManualMappings {
     extra_dependencies: HashMap<String, Vec<String>>,
     #[serde(default)]
     extra_package_paths: HashMap<String, Vec<String>>,
+    #[serde(default)]
+    conditional_dependencies: HashMap<String, Vec<String>>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -175,6 +179,7 @@ pub fn build_pip_metadata(
     let mut manual_import_mappings = HashMap::new();
     let mut manual_extra_deps = HashMap::new();
     let mut manual_extra_paths = HashMap::new();
+    let mut manual_conditional_deps = HashMap::new();
 
     if let Some(path_str) = manual_mapping_path {
         let path = PathBuf::from(path_str);
@@ -185,6 +190,7 @@ pub fn build_pip_metadata(
             manual_import_mappings = mappings.import_mappings;
             manual_extra_deps = mappings.extra_dependencies;
             manual_extra_paths = mappings.extra_package_paths;
+            manual_conditional_deps = mappings.conditional_dependencies;
         }
     }
 
@@ -201,6 +207,7 @@ pub fn build_pip_metadata(
         pip_package_info_map: package_info_map,
         extra_dependencies_map: manual_extra_deps,
         extra_paths_map: manual_extra_paths,
+        conditional_dependencies_map: manual_conditional_deps,
     })
 }
 
@@ -212,26 +219,58 @@ pub fn resolve_package_set(
 ) -> PyResult<HashMap<String, PipPackageInfo>> {
     let metadata: PyRef<PipMetadata> = pip_metadata.extract()?;
     let all_packages_info = &metadata.pip_package_info_map;
+    let import_to_pip = &metadata.import_to_pip_map;
     let extra_deps_map = &metadata.extra_dependencies_map;
+    let conditional_deps_map = &metadata.conditional_dependencies_map;
     
-
     let mut final_package_set = HashSet::new();
     let mut processing_stack = direct_packages;
 
-    while let Some(package_name) = processing_stack.pop() {
-        if !final_package_set.insert(package_name.clone()) {
-            continue; 
-        }
-
-        if let Some(package_info) = all_packages_info.get(&package_name) {
-            for dep in &package_info.dependencies {
-                processing_stack.push(dep.clone());
+    while let Some(item_name) = processing_stack.pop() {        
+        let mut current_segment = item_name.as_str();
+        loop {
+            if let Some(cond_deps) = conditional_deps_map.get(current_segment) {
+                for dep in cond_deps {
+                    processing_stack.push(dep.clone());
+                }
+            }
+            
+            match current_segment.rfind('.') {
+                Some(idx) => current_segment = &current_segment[..idx],
+                None => break,
             }
         }
         
-        if let Some(extra_deps) = extra_deps_map.get(&package_name) {
-            for extra_dep in extra_deps {
-                processing_stack.push(extra_dep.clone());
+        let resolved_pkg_name = if all_packages_info.contains_key(&item_name) {
+            Some(item_name.clone())
+        } 
+        else if let Some(pkg) = import_to_pip.get(&item_name) {
+            Some(pkg.clone())
+        } 
+        else {
+            let base_name = item_name.split('.').next().unwrap_or(&item_name);
+            if let Some(pkg) = import_to_pip.get(base_name) {
+                Some(pkg.clone())
+            } else {
+                None
+            }
+        };
+
+        if let Some(pkg_name) = resolved_pkg_name {
+            if !final_package_set.insert(pkg_name.clone()) {
+                continue; 
+            }
+
+            if let Some(package_info) = all_packages_info.get(&pkg_name) {
+                for dep in &package_info.dependencies {
+                    processing_stack.push(dep.clone());
+                }
+                
+                if let Some(extra_deps) = extra_deps_map.get(&pkg_name) {
+                    for extra_dep in extra_deps {
+                        processing_stack.push(extra_dep.clone());
+                    }
+                }
             }
         }
     }
@@ -479,7 +518,10 @@ fn parse_file_imports(
                 } else if stdlib_modules.contains(base_module) {
                     stdlib_imports.insert(base_module.to_string());
                 } else {
-                    third_party_imports.insert(base_module.to_string());
+                    third_party_imports.insert(module.to_string());
+                    if base_module != module {
+                        third_party_imports.insert(base_module.to_string());
+                    }
                 }
             }
         }
@@ -491,14 +533,6 @@ fn parse_file_imports(
         });
     }
 }
-
-
-
-
-
-
-
-
 
 
 #[cfg(test)]
@@ -693,5 +727,107 @@ mod tests {
         let extra_paths = metadata.extra_paths_map.get("gremlinpython").unwrap();
         assert!(extra_paths.contains(&"bin".to_string()));
         assert!(extra_paths.contains(&"lib".to_string()));
-    }    
+    }
+
+    #[test]
+    fn test_resolve_package_set_smart_prefix_logic() {
+        pyo3::prepare_freethreaded_python();
+        
+        Python::with_gil(|py| {
+            let mut conditional_deps = HashMap::new();
+            conditional_deps.insert("a.b".to_string(), vec!["package_extra".to_string()]);
+
+            let mut pip_info = HashMap::new();
+
+            pip_info.insert("a".to_string(), PipPackageInfo {
+                version: "1.0".to_string(),
+                installed_paths: vec![],
+                dependencies: vec![],
+            });
+
+            pip_info.insert("package_extra".to_string(), PipPackageInfo {
+                version: "1.0".to_string(),
+                installed_paths: vec![],
+                dependencies: vec![],
+            });
+
+            let mut import_map = HashMap::new();
+            import_map.insert("a".to_string(), "a".to_string());
+            import_map.insert("package_extra".to_string(), "package_extra".to_string());
+
+            let metadata = PipMetadata {
+                import_to_pip_map: import_map,
+                pip_package_info_map: pip_info,
+                extra_dependencies_map: HashMap::new(),
+                extra_paths_map: HashMap::new(),
+                conditional_dependencies_map: conditional_deps,
+            };
+
+            let py_metadata = Py::new(py, metadata).unwrap().into_bound(py);
+
+            let input = vec!["a.b.c".to_string()];
+            let result = resolve_package_set(input, &py_metadata).unwrap();
+
+            assert!(result.contains_key("a"), "Should resolve the base package 'a'");
+            assert!(result.contains_key("package_extra"), "Should have detected the conditional rule for 'a.b' using 'a.b.c'");
+        });
+    }
+
+    #[test]
+    fn test_resolve_priority_import_map_vs_base_name() {
+        pyo3::prepare_freethreaded_python();
+        
+        Python::with_gil(|py| {
+            let mut pip_info = HashMap::new();
+            pip_info.insert("opencv-python".to_string(), PipPackageInfo {
+                version: "1.0".to_string(), installed_paths: vec![], dependencies: vec![] 
+            });
+
+            let mut import_map = HashMap::new();
+            import_map.insert("cv2".to_string(), "opencv-python".to_string());
+
+            let metadata = PipMetadata {
+                import_to_pip_map: import_map,
+                pip_package_info_map: pip_info,
+                extra_dependencies_map: HashMap::new(),
+                extra_paths_map: HashMap::new(),
+                conditional_dependencies_map: HashMap::new(),
+            };
+            let py_metadata = Py::new(py, metadata).unwrap().into_bound(py);
+
+            let result = resolve_package_set(vec!["cv2.submodule".to_string()], &py_metadata).unwrap();
+
+            assert!(result.contains_key("opencv-python"));
+            assert!(!result.contains_key("cv2"));
+        });
+    }
+
+    #[test]
+    fn test_build_pip_metadata_with_conditional_dependencies() {
+        let dir = tempdir().unwrap();
+        let site_packages = dir.path();
+        
+        let json_path = dir.path().join("tree.json");
+        fs::write(&json_path, "{}").unwrap(); 
+
+        let toml_path = dir.path().join("mappings.toml");
+        let toml_content = r#"
+            [conditional_dependencies]
+            "pydantic.EmailStr" = ["email-validator"]
+            "openpyxl.drawing.image" = ["pillow"]
+        "#;
+        fs::write(&toml_path, toml_content).unwrap();
+
+        let metadata = build_pip_metadata(
+            json_path.to_str().unwrap(),
+            site_packages.to_str().unwrap(),
+            Some(toml_path.to_str().unwrap().to_string())
+        ).unwrap();
+
+        let cond_deps = metadata.conditional_dependencies_map.get("pydantic.EmailStr").unwrap();
+        assert!(cond_deps.contains(&"email-validator".to_string()));
+
+        let cond_deps_pillow = metadata.conditional_dependencies_map.get("openpyxl.drawing.image").unwrap();
+        assert!(cond_deps_pillow.contains(&"pillow".to_string()));
+    }  
 }
