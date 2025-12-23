@@ -730,6 +730,79 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_package_set_smart_prefix_logic() {
+        pyo3::prepare_freethreaded_python();
+        
+        Python::with_gil(|py| {
+            let mut conditional_deps = HashMap::new();
+            conditional_deps.insert("a.b".to_string(), vec!["package_extra".to_string()]);
+
+            let mut pip_info = HashMap::new();
+
+            pip_info.insert("a".to_string(), PipPackageInfo {
+                version: "1.0".to_string(),
+                installed_paths: vec![],
+                dependencies: vec![],
+            });
+
+            pip_info.insert("package_extra".to_string(), PipPackageInfo {
+                version: "1.0".to_string(),
+                installed_paths: vec![],
+                dependencies: vec![],
+            });
+
+            let mut import_map = HashMap::new();
+            import_map.insert("a".to_string(), "a".to_string());
+            import_map.insert("package_extra".to_string(), "package_extra".to_string());
+
+            let metadata = PipMetadata {
+                import_to_pip_map: import_map,
+                pip_package_info_map: pip_info,
+                extra_dependencies_map: HashMap::new(),
+                extra_paths_map: HashMap::new(),
+                conditional_dependencies_map: conditional_deps,
+            };
+
+            let py_metadata = Py::new(py, metadata).unwrap().into_bound(py);
+
+            let input = vec!["a.b.c".to_string()];
+            let result = resolve_package_set(input, &py_metadata).unwrap();
+
+            assert!(result.contains_key("a"), "Should resolve the base package 'a'");
+            assert!(result.contains_key("package_extra"), "Should have detected the conditional rule for 'a.b' using 'a.b.c'");
+        });
+    }
+
+    #[test]
+    fn test_resolve_priority_import_map_vs_base_name() {
+        pyo3::prepare_freethreaded_python();
+        
+        Python::with_gil(|py| {
+            let mut pip_info = HashMap::new();
+            pip_info.insert("opencv-python".to_string(), PipPackageInfo {
+                version: "1.0".to_string(), installed_paths: vec![], dependencies: vec![] 
+            });
+
+            let mut import_map = HashMap::new();
+            import_map.insert("cv2".to_string(), "opencv-python".to_string());
+
+            let metadata = PipMetadata {
+                import_to_pip_map: import_map,
+                pip_package_info_map: pip_info,
+                extra_dependencies_map: HashMap::new(),
+                extra_paths_map: HashMap::new(),
+                conditional_dependencies_map: HashMap::new(),
+            };
+            let py_metadata = Py::new(py, metadata).unwrap().into_bound(py);
+
+            let result = resolve_package_set(vec!["cv2.submodule".to_string()], &py_metadata).unwrap();
+
+            assert!(result.contains_key("opencv-python"));
+            assert!(!result.contains_key("cv2"));
+        });
+    }
+
+    #[test]
     fn test_build_pip_metadata_with_conditional_dependencies() {
         let dir = tempdir().unwrap();
         let site_packages = dir.path();

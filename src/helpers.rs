@@ -71,6 +71,7 @@ pub(super) fn resolve_module_in_project_seq(
     result
 }
 
+// Helper function to flatten nested attributes: a.b.c -> "a.b.c"
 fn get_dotted_name(expr: &Expr) -> Option<String> {
     match expr {
         Expr::Name(name) => Some(name.id.to_string()),
@@ -132,8 +133,18 @@ pub(super) fn imports_from_source(source: &str) -> Vec<String> {
             match expr {
                 Expr::Attribute(attr) => {
                     if let Some(base_name) = get_dotted_name(&attr.value) {
-                        let resolved_base = self.aliases.get(&base_name).unwrap_or(&base_name);
-                        if self.imports.contains(resolved_base) || self.aliases.contains_key(&base_name) {
+                        
+                        let (root, remainder) = match base_name.split_once('.') {
+                            Some((r, rem)) => (r, Some(rem)),
+                            None => (base_name.as_str(), None),
+                        };
+                        let resolved_root = self.aliases.get(root).map(|s| s.as_str()).unwrap_or(root);
+                        let resolved_base = if let Some(rem) = remainder {
+                            format!("{}.{}", resolved_root, rem)
+                        } else {
+                            resolved_root.to_string()
+                        };
+                        if self.imports.contains(&resolved_base) || self.aliases.contains_key(root) {
                             let detected_usage = format!("{}.{}", resolved_base, attr.attr);
                             self.imports.insert(detected_usage);
                         }
@@ -217,6 +228,19 @@ img = openpyxl.drawing.image.Image('test.png')
     }
 
     #[test]
+    fn test_imports_with_intermediate_alias() {
+        let source_code = r#"
+import openpyxl.drawing as drawing_lib
+# Uso del alias para acceder a un sub-atributo
+obj = drawing_lib.image.Image()
+        "#;
+        
+        let imports = imports_from_source(source_code);
+        let imports_set: HashSet<_> = imports.into_iter().collect();
+        assert!(imports_set.contains("openpyxl.drawing.image.Image"));
+    }
+
+    #[test]
     fn test_find_package_inits() {
         let dir = tempdir().unwrap();
         let root = dir.path();
@@ -235,6 +259,7 @@ img = openpyxl.drawing.image.Image('test.png')
         let inits_cached = find_package_inits_in_path_seq("pkg.submodule", root, &mut cache);
         assert_eq!(inits_cached.len(), 1);
     }
+    
 
     #[test]
     fn test_resolve_module_file() {
@@ -282,4 +307,6 @@ img = openpyxl.drawing.image.Image('test.png')
         assert!(stdlib.contains("re"));
         assert!(!stdlib.contains("requests"));
     }
+
+    
 }
