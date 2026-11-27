@@ -4,7 +4,7 @@ use pyo3::Bound;
 use serde::Deserialize;
 use serde_json;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -411,6 +411,80 @@ fn find_dependents(
     Ok(dependents)
 }
 
+/// Shortest chain of imports from `source` to `target` (for debugging only).
+///
+/// `target` can be a file of the map or the name of a third-party library (in that case the
+/// chain ends at the first file that imports it). Returns the list of files, starting at
+/// `source`, or `None` if there is no path. It is a separate function: nothing else calls it,
+/// so it has no effect and no cost unless it is used.
+#[pyfunction]
+fn explain_dependency(
+    dependency_map: &Bound<'_, PyDict>,
+    source: &str,
+    target: &str,
+) -> PyResult<Option<Vec<String>>> {
+    let mut graph: HashMap<String, (Vec<String>, Vec<String>)> =
+        HashMap::with_capacity(dependency_map.len());
+    for (path, value) in dependency_map {
+        let path = path.extract::<String>()?;
+        let file: PyRef<ProjectFile> = value.extract()?;
+        graph.insert(path, (file.project_imports.clone(), file.third_party_imports.clone()));
+    }
+    if !graph.contains_key(source) {
+        return Err(pyo3::exceptions::PyKeyError::new_err(format!(
+            "source file not indexed: {}",
+            source
+        )));
+    }
+    Ok(shortest_import_chain(&graph, source, target))
+}
+
+/// Breadth-first search. Neighbors are visited in alphabetical order so that, among chains of
+/// the same length, the result is always the same.
+fn shortest_import_chain(
+    graph: &HashMap<String, (Vec<String>, Vec<String>)>,
+    source: &str,
+    target: &str,
+) -> Option<Vec<String>> {
+    let target_is_file = graph.contains_key(target);
+    let is_goal = |node: &str| {
+        if target_is_file {
+            node == target
+        } else {
+            graph.get(node).map_or(false, |(_, third)| third.iter().any(|t| t == target))
+        }
+    };
+
+    let mut previous: HashMap<&str, Option<&str>> = HashMap::new();
+    let mut queue: VecDeque<&str> = VecDeque::new();
+    previous.insert(source, None);
+    queue.push_back(source);
+
+    while let Some(current) = queue.pop_front() {
+        if is_goal(current) {
+            let mut chain = vec![current.to_string()];
+            let mut node = current;
+            while let Some(Some(parent)) = previous.get(node) {
+                chain.push(parent.to_string());
+                node = parent;
+            }
+            chain.reverse();
+            return Some(chain);
+        }
+        if let Some((imports, _)) = graph.get(current) {
+            let mut next: Vec<&str> = imports.iter().map(|s| s.as_str()).collect();
+            next.sort_unstable();
+            for n in next {
+                if graph.contains_key(n) && !previous.contains_key(n) {
+                    previous.insert(n, Some(current));
+                    queue.push_back(n);
+                }
+            }
+        }
+    }
+    None
+}
+
 #[pymodule]
 fn py_dependency_mapper<'py>(_py: Python<'py>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ProjectFile>()?;
@@ -422,6 +496,7 @@ fn py_dependency_mapper<'py>(_py: Python<'py>, m: &Bound<'_, PyModule>) -> PyRes
     m.add_function(wrap_pyfunction!(build_pip_metadata, m)?)?;
     m.add_function(wrap_pyfunction!(resolve_package_set, m)?)?;
     m.add_function(wrap_pyfunction!(find_dependents, m)?)?;
+    m.add_function(wrap_pyfunction!(explain_dependency, m)?)?;
     Ok(())
 }
 
@@ -692,6 +767,74 @@ mod tests {
         let file = map.get(&root.join("bold").join("main.py").to_string_lossy().into_owned()).unwrap();
         assert!(file.third_party_imports.contains(&"boldsign".to_string()));
         assert!(file.project_imports.iter().any(|p| p.ends_with("main.py")));
+    }
+
+    fn chain_graph() -> HashMap<String, (Vec<String>, Vec<String>)> {
+        let node = |imports: &[&str], third: &[&str]| {
+            (
+                imports.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                third.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+            )
+        };
+        let mut g = HashMap::new();
+        g.insert("handler.py".to_string(), node(&["a.py", "b.py"], &[]));
+        g.insert("a.py".to_string(), node(&["c.py"], &[]));
+        g.insert("b.py".to_string(), node(&["c.py", "d.py"], &[]));
+        g.insert("c.py".to_string(), node(&["d.py"], &["requests"]));
+        g.insert("d.py".to_string(), node(&[], &["aiodynamo", "aiodynamo.client"]));
+        g.insert("lonely.py".to_string(), node(&[], &[]));
+        g
+    }
+
+    #[test]
+    fn test_shortest_import_chain_to_file() {
+        let g = chain_graph();
+        // Two possible paths to d.py; the shortest goes through b.py (2 hops), not a/c (3).
+        assert_eq!(
+            shortest_import_chain(&g, "handler.py", "d.py"),
+            Some(vec!["handler.py".to_string(), "b.py".to_string(), "d.py".to_string()])
+        );
+        // The starting file is the target.
+        assert_eq!(shortest_import_chain(&g, "a.py", "a.py"), Some(vec!["a.py".to_string()]));
+    }
+
+    #[test]
+    fn test_shortest_import_chain_to_third_party() {
+        let g = chain_graph();
+        // It ends at the first file that imports the library.
+        assert_eq!(
+            shortest_import_chain(&g, "handler.py", "requests"),
+            Some(vec!["handler.py".to_string(), "a.py".to_string(), "c.py".to_string()])
+        );
+        assert_eq!(
+            shortest_import_chain(&g, "handler.py", "aiodynamo"),
+            Some(vec!["handler.py".to_string(), "b.py".to_string(), "d.py".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_shortest_import_chain_no_path_and_cycles() {
+        let mut g = chain_graph();
+        assert_eq!(shortest_import_chain(&g, "handler.py", "lonely.py"), None);
+        assert_eq!(shortest_import_chain(&g, "handler.py", "does_not_exist"), None);
+        // A cycle does not hang the search.
+        g.get_mut("d.py").unwrap().0.push("handler.py".to_string());
+        assert_eq!(shortest_import_chain(&g, "handler.py", "lonely.py"), None);
+    }
+
+    #[test]
+    fn test_explain_dependency_from_python_dict() {
+        Python::initialize();
+        Python::attach(|py| {
+            let map = PyDict::new(py);
+            map.set_item("t.py", mock_file(py, vec!["s.py"])).unwrap();
+            map.set_item("s.py", mock_file(py, vec![])).unwrap();
+
+            let chain = explain_dependency(&map, "t.py", "s.py").unwrap();
+            assert_eq!(chain, Some(vec!["t.py".to_string(), "s.py".to_string()]));
+            assert_eq!(explain_dependency(&map, "s.py", "t.py").unwrap(), None);
+            assert!(explain_dependency(&map, "x.py", "s.py").is_err());
+        });
     }
 
     #[test]
