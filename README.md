@@ -129,6 +129,30 @@ for path in impacted_files:
 # tests_to_run = [f for f in impacted_files if f.startswith("tests/") or f.endswith("_test.py")]
 
 ```
+
+#### Debugging: why does A depend on B?
+
+`explain_dependency` is a debugging helper. It returns the shortest chain of imports that leads
+from one file to another, so you can see *why* a test was selected or *why* a library ends up in a
+package. Nothing else calls it, so it has no effect (and no cost) unless you use it.
+
+```python
+# Why is this test selected when utils.py changes?
+chain = py_dependency_mapper.explain_dependency(
+    dependency_map,
+    source="/path/to/project/tests/test_main.py",
+    target="/path/to/project/my_app/utils.py",
+)
+# ['/path/to/project/tests/test_main.py',
+#  '/path/to/project/my_app/main.py',
+#  '/path/to/project/my_app/utils.py']
+
+# Why does this handler pull in a third-party library?
+chain = py_dependency_mapper.explain_dependency(
+    dependency_map, source="/path/to/project/my_app/handler.py", target="aiodynamo"
+)
+# The chain ends at the first file that imports the library.
+```
 ---
 
 ## PIP Package Dependencies Analysis
@@ -315,6 +339,25 @@ Performs a reverse dependency lookup. Identifies all files in the project that d
 * **dependency_map**: The dictionary returned by `build_dependency_map`.
 * **changed_file_paths**: A list of absolute paths to the files that were modified.
 * **returns**: A Set of strings containing the absolute paths of all files that are impacted by the changes.
+
+---
+
+```python
+explain_dependency(
+    dependency_map: Dict,
+    source: str,
+    target: str
+) -> Optional[List[str]]
+```
+
+Debugging helper. Finds the shortest chain of imports from `source` to `target`.
+
+* **dependency_map**: The dictionary returned by `build_dependency_map`.
+* **source**: Path of an indexed file, exactly as it appears as a key in the map. Raises `KeyError` if it is not indexed.
+* **target**: Either the path of an indexed file, or the name of a third-party module (e.g. `"aiodynamo"`). For a third-party module the chain ends at the first file that imports it.
+* **returns**: The list of file paths from `source` to the file that reaches `target`, or `None` if there is no path. When several chains have the same length the result is always the same one.
+
+A test depends on a changed file exactly when `explain_dependency(map, test, changed)` returns a chain, so it answers "why was this test selected by `find_dependents`?". It is not meant for hot paths: it rebuilds an internal graph from the map on every call (about 0.1 s on 37,000 files).
 
 ---
 
