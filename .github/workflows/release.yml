@@ -5,9 +5,10 @@ on:
       - 'v*'
   workflow_dispatch:
 
+# Least privilege: jobs only read the repository. The OIDC token needed to publish to PyPI
+# (id-token: write) is granted only to the publish job.
 permissions:
   contents: read
-  id-token: write
 
 jobs:
   build_wheels:
@@ -95,8 +96,14 @@ jobs:
   publish_to_pypi:
     name: Publish to PyPI
     runs-on: ubuntu-latest
+    # Only tags publish: a manual run (workflow_dispatch) from a branch builds and verifies the
+    # wheels but never uploads them to PyPI.
+    if: startsWith(github.ref, 'refs/tags/v')
     environment: release
     needs: [build_wheels, verify_wheels]
+    permissions:
+      contents: read
+      id-token: write
 
     steps:
       - uses: actions/setup-python@v7
