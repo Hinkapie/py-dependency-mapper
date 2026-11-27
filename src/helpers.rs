@@ -45,6 +45,28 @@ pub(super) fn find_package_inits_in_path_seq(
     inits
 }
 
+/// `__init__.py` de los paquetes que contienen a `file` (de `source_root` hacia abajo, sin incluir
+/// al propio archivo). Python los ejecuta siempre que se importa el módulo, aunque el archivo no
+/// importe nada del proyecto, así que son dependencias implícitas de cualquier archivo.
+pub(super) fn own_package_inits(file: &Path, source_root: &Path) -> Vec<PathBuf> {
+    let mut inits = Vec::new();
+    let Ok(rel) = file.strip_prefix(source_root) else {
+        return inits;
+    };
+    let Some(parent_rel) = rel.parent() else {
+        return inits;
+    };
+    let mut current = source_root.to_path_buf();
+    for component in parent_rel.components() {
+        current.push(component);
+        let init_path = current.join("__init__.py");
+        if init_path != file && init_path.exists() {
+            inits.push(init_path);
+        }
+    }
+    inits
+}
+
 pub(super) fn resolve_module_in_project_seq(
     module: &str,
     source_root: &Path,
@@ -259,6 +281,33 @@ obj = drawing_lib.image.Image()
         assert_eq!(inits_cached.len(), 1);
     }
     
+
+    #[test]
+    fn test_own_package_inits() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let a = root.join("a");
+        let b = a.join("b");
+        let c = b.join("c"); // sin __init__.py (namespace)
+        fs::create_dir_all(&c).unwrap();
+        File::create(a.join("__init__.py")).unwrap();
+        File::create(b.join("__init__.py")).unwrap();
+        File::create(c.join("mod.py")).unwrap();
+
+        // Archivo suelto en la raíz: no tiene paquetes padre.
+        assert!(own_package_inits(&root.join("top.py"), root).is_empty());
+
+        // Los padres con __init__.py, en orden, saltando carpetas que no lo tienen.
+        let inits = own_package_inits(&c.join("mod.py"), root);
+        assert_eq!(inits, vec![a.join("__init__.py"), b.join("__init__.py")]);
+
+        // Un __init__.py no se lista a sí mismo, pero sí a sus paquetes padre.
+        let inits = own_package_inits(&b.join("__init__.py"), root);
+        assert_eq!(inits, vec![a.join("__init__.py")]);
+
+        // Fuera de source_root no se devuelve nada.
+        assert!(own_package_inits(Path::new("/otra/ruta/x.py"), root).is_empty());
+    }
 
     #[test]
     fn test_resolve_module_file() {

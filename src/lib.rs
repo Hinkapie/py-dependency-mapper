@@ -531,6 +531,11 @@ fn parse_file_imports(
         let mut stdlib_imports = HashSet::new();
         let mut third_party_imports = HashSet::new();
 
+        // Los __init__.py de las carpetas del propio archivo también son dependencias.
+        for p in helpers::own_package_inits(path, source_root_path) {
+            resolved_project_imports.insert(p.to_string_lossy().into_owned());
+        }
+
         if let Ok(content_str) = std::str::from_utf8(&content_bytes) {
             let import_strings = imports_from_source(content_str);
             for module in import_strings {
@@ -651,6 +656,34 @@ mod tests {
         
         let found = find_dist_info_dir("nonexistent", "1.0.0", site_packages);
         assert_eq!(found, None);
+    }
+
+    #[test]
+    fn test_parse_file_imports_includes_own_package_inits() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let pkg = root.join("bold").join("a");
+        fs::create_dir_all(&pkg).unwrap();
+        File::create(root.join("bold").join("__init__.py")).unwrap();
+        File::create(pkg.join("__init__.py")).unwrap();
+        // Entry point que no importa nada del proyecto.
+        fs::write(pkg.join("lonely.py"), "import json\n").unwrap();
+
+        let mut map = HashMap::new();
+        let mut mod_cache = HashMap::new();
+        let mut init_cache = HashMap::new();
+        parse_file_imports(
+            &pkg.join("lonely.py"), root, &["bold".to_string()], &HashSet::new(),
+            &mut map, &mut mod_cache, &mut init_cache,
+        );
+
+        let file = map.get(&pkg.join("lonely.py").to_string_lossy().into_owned()).unwrap();
+        let imports: HashSet<_> = file.project_imports.iter().cloned().collect();
+        let expected: HashSet<_> = [
+            root.join("bold").join("__init__.py"),
+            pkg.join("__init__.py"),
+        ].iter().map(|p| p.to_string_lossy().into_owned()).collect();
+        assert_eq!(imports, expected);
     }
 
     #[test]
