@@ -27,6 +27,10 @@ This makes it ideal for packaging (e.g., serverless deployments), dependency aud
 
 🔍 **Impact Analysis** (Reverse Lookups): Instantly find which files depend on a specific module (ideal for Smart Testing).
 
+🧭 **Explain a dependency**: `explain_dependency` shows the chain of imports that links two files, or a file and a third-party library (debugging only).
+
+📦 **Complete packages**: parent `__init__.py` files and the full `.dist-info` of each pip package are included.
+
 🐍 **Python API** and CLI utilities.
 
 🚀 **CI/CD friendly** — designed for large projects with hundreds or thousands of files.
@@ -300,7 +304,7 @@ Scans the project and builds the dependency map.
 
 * **source_root**: Absolute path to the root of your source code.  
 
-* **project_module_prefixes**: A list of module prefixes to include in the analysis (e.g., `["my_app"]`).  
+* **project_module_prefixes**: A list of module prefixes to include in the analysis (e.g., `["my_app"]`). A module matches when it is the prefix itself or one of its submodules (`my_app` matches `my_app` and `my_app.utils`, but not `my_app_extra` or `my_application`), so similarly named third-party packages are not mistaken for project code.  
 
 * **include_paths**: A list of directories or files (relative to `source_root`) to begin the scan from.
 
@@ -407,7 +411,7 @@ Contains information about a Python source file:
 
 * `hash`: SHA256 hash of the file content.
 
-* `project_imports`: List of imported project modules (file paths).
+* `project_imports`: List of project files this file depends on (file paths). Besides the modules it imports, it always includes the `__init__.py` of every package that contains the file (and of every package of each imported module), because Python runs them whenever the module is imported. A file with no project imports therefore still lists its parent `__init__.py` files, and so do the graphs returned by `get_dependency_graph`. Note that changing an `__init__.py` makes `find_dependents` return every file of its package.
 
 * `stdlib_imports`: List of imported standard library modules.
 
