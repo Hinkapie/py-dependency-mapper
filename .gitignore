@@ -70,3 +70,15 @@ docs/_build/
 
 # Pyenv
 .python-version
+
+# Secrets and credentials: never commit them
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+.pypirc
+.netrc
+credentials*
+*.secret
