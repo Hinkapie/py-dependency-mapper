@@ -8,6 +8,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+# The CI only needs to read the repository.
+permissions:
+  contents: read
+
 jobs:
   test_and_build:
     name: Test & Verify Build on ${{ matrix.os }} (Py ${{ matrix.python-version }})
