@@ -2,54 +2,131 @@ name: Release
 on:
   push:
     tags:
-      - 'v*' 
+      - 'v*'
   workflow_dispatch:
 
 permissions:
   contents: read
-  id-token: write 
+  id-token: write
 
 jobs:
   build_wheels:
-    name: Build wheels on ${{ matrix.os }}
+    name: Build wheel on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: true
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-14, macos-15]
-        
-    steps:
-      - uses: actions/checkout@v4
+        # One runner per platform/architecture: if two runners produce the same wheel name
+        # (e.g. two macOS arm64 runners), one overwrites the other when the artifacts are
+        # merged and a corrupt wheel gets published.
+        os: [ubuntu-latest, windows-latest, macos-15, macos-15-intel]
 
-      - uses: actions/setup-python@v5
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
+
+      # The ruff git dependency has paths longer than 260 characters and on Windows cargo's
+      # checkout fails with "path too long" unless git has long paths enabled.
+      - name: Enable long paths for git (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          git config --system core.longpaths true
+          git config --global core.longpaths true
 
       - name: Run Rust tests
         run: cargo test
 
-      - name: Build wheels
+      # The wheel is abi3 (cp310-abi3): a single wheel per platform works for Python >= 3.10,
+      # including 3.14 and 3.15, without recompiling.
+      - name: Build wheel
         uses: PyO3/maturin-action@v1
         with:
           args: --release --out dist ${{ matrix.os == 'ubuntu-latest' && '--sdist' || '' }}
-          
+
+      - name: Smoke test the built wheel
+        shell: bash
+        run: |
+          python -m venv smoke
+          if [ -f smoke/bin/python ]; then PY=smoke/bin/python; else PY=smoke/Scripts/python; fi
+          $PY -m pip install --no-index --find-links dist py-dependency-mapper
+          $PY -I -c "import py_dependency_mapper; print('import ok')"
+
       - name: Upload wheels
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wheels-${{ matrix.os }}
           path: dist
+
+  verify_wheels:
+    name: Verify wheel on ${{ matrix.os }} (Py ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    needs: [build_wheels]
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-15, macos-15-intel]
+        python-version: ['3.10', '3.13', '3.14', '3.15']
+
+    steps:
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          allow-prereleases: true
+
+      # The same abi3 wheel built with 3.13 is installed on every Python version, with no
+      # access to PyPI or to the source code: this checks that no recompiling is needed.
+      - name: Download wheel built for this platform
+        uses: actions/download-artifact@v8
+        with:
+          name: wheels-${{ matrix.os }}
+          path: dist
+
+      - name: Install wheel and smoke test
+        shell: bash
+        run: |
+          python -m venv verify
+          if [ -f verify/bin/python ]; then PY=verify/bin/python; else PY=verify/Scripts/python; fi
+          $PY -m pip install --no-index --only-binary :all: --find-links dist py-dependency-mapper
+          $PY -I -c "import sys, py_dependency_mapper; print(sys.version.split()[0], 'import ok')"
 
   publish_to_pypi:
     name: Publish to PyPI
     runs-on: ubuntu-latest
     environment: release
-    needs: [build_wheels] 
-    
+    needs: [build_wheels, verify_wheels]
+
     steps:
-      - name: Download all wheels
-        uses: actions/download-artifact@v4
+      - uses: actions/setup-python@v7
         with:
-          path: dist
-          merge-multiple: true 
+          python-version: '3.13'
+
+      - name: Download all wheels
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      - name: Collect and verify distributions
+        run: |
+          mkdir dist
+          python - <<'PY'
+          import pathlib, shutil, sys, zipfile
+          seen = {}
+          for f in sorted(pathlib.Path("artifacts").rglob("*")):
+              if not f.is_file():
+                  continue
+              if f.name in seen:
+                  sys.exit(f"Duplicate file name across runners: {f.name} ({seen[f.name]} and {f})")
+              seen[f.name] = f
+              if f.suffix == ".whl":
+                  bad = zipfile.ZipFile(f).testzip()
+                  if bad:
+                      sys.exit(f"Corrupt wheel {f.name}: {bad}")
+              shutil.copy(f, "dist" / pathlib.Path(f.name))
+          print("\n".join(sorted(seen)))
+          PY
 
       - name: Publish to PyPI
         uses: PyO3/maturin-action@v1
