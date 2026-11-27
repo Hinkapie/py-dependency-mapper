@@ -27,6 +27,8 @@ This makes it ideal for packaging (e.g., serverless deployments), dependency aud
 
 🔍 **Impact Analysis** (Reverse Lookups): Instantly find which files depend on a specific module (ideal for Smart Testing).
 
+📦 **Complete pip packages**: the full `.dist-info` directory of each package is included in `installed_paths`.
+
 🐍 **Python API** and CLI utilities.
 
 🚀 **CI/CD friendly** — designed for large projects with hundreds or thousands of files.
@@ -209,6 +211,14 @@ for pkg_name, pkg_info in pip_metadata.pip_package_info_map.items():
 
 ```
 
+`installed_paths` contains everything that must be copied to ship the package, relative to
+`site_packages`: its top-level files and directories (e.g. `requests`, `six.py`), the console
+scripts under `bin/` (e.g. `bin/tool`) and **the complete `.dist-info` directory**
+(e.g. `requests-2.32.5.dist-info`). The `.dist-info` is always included, even if the package's
+`RECORD` does not list it, because some libraries need it at runtime (`importlib.metadata`,
+entry points, `pkg_resources`). It is not treated as an importable module, so it never appears in
+`import_to_pip_map`.
+
 ### Package Set Resolution
 
 ```python
@@ -384,7 +394,8 @@ Information about a specific pip package:
 
 * `version`: Package version string.
 
-* `installed_paths`: List of installed file/directory paths.
+* `installed_paths`: List of installed paths relative to `site_packages`: top-level files and
+  directories, `bin/` scripts and the complete `.dist-info` directory. The order is not guaranteed.
 
 * `dependencies`: List of direct dependency package names
 
