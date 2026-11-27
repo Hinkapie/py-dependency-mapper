@@ -22,9 +22,9 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-14, macos-15-intel]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
 
@@ -47,7 +47,7 @@ jobs:
           $PY -I -c "import py_dependency_mapper; print('import ok')"
 
       - name: Upload wheels
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wheels-${{ matrix.os }}
           path: dist
@@ -63,7 +63,7 @@ jobs:
         python-version: ['3.9', '3.13', '3.14', '3.15']
 
     steps:
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           allow-prereleases: true
@@ -71,7 +71,7 @@ jobs:
       # Se instala el mismo wheel abi3 construido con 3.13 en cada versión de Python,
       # sin acceso a PyPI ni al código fuente: así se comprueba que no hay que recompilar.
       - name: Download wheel built for this platform
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: wheels-${{ matrix.os }}
           path: dist
@@ -91,12 +91,12 @@ jobs:
     needs: [build_wheels, verify_wheels]
 
     steps:
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
 
       - name: Download all wheels
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 
