@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - master
   pull_request:
   workflow_dispatch:
 
@@ -15,7 +16,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-14, macos-15]
-        python-version: ['3.8', '3.9', '3.10', '3.11', '3.12', '3.13', '3.14']
+        python-version: ['3.9', '3.10', '3.11', '3.12', '3.13', '3.14', '3.15']
 
     steps:
       - uses: actions/checkout@v4
@@ -28,8 +29,16 @@ jobs:
       - name: Run Rust tests
         run: cargo test
 
-      - name: Verify Build (Dry Run)
+      - name: Build wheel
         uses: PyO3/maturin-action@v1
         with:
           command: build
-          args: --release
+          args: --release --out dist
+
+      - name: Install wheel and smoke test
+        shell: bash
+        run: |
+          python -m venv smoke
+          if [ -f smoke/bin/python ]; then PY=smoke/bin/python; else PY=smoke/Scripts/python; fi
+          $PY -m pip install --no-index --find-links dist py-dependency-mapper
+          $PY -I -c "import py_dependency_mapper; print('import ok')"

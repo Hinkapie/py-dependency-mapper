@@ -2,21 +2,25 @@ name: Release
 on:
   push:
     tags:
-      - 'v*' 
+      - 'v*'
   workflow_dispatch:
 
 permissions:
   contents: read
-  id-token: write 
+  id-token: write
 
 jobs:
   build_wheels:
-    name: Build wheels on ${{ matrix.os }}
+    name: Build wheel on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: true
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-14, macos-15]
-        
+        # Una sola máquina por plataforma/arquitectura: si dos runners generan el mismo
+        # nombre de wheel (p. ej. macos-14 y macos-15, ambos arm64), uno pisa al otro al
+        # unir los artefactos y se publica un wheel corrupto.
+        os: [ubuntu-latest, windows-latest, macos-14, macos-15-intel]
+
     steps:
       - uses: actions/checkout@v4
 
@@ -27,29 +31,94 @@ jobs:
       - name: Run Rust tests
         run: cargo test
 
-      - name: Build wheels
+      # El wheel es abi3 (cp39-abi3): un único wheel por plataforma sirve para Python >= 3.9,
+      # incluidos 3.14 y 3.15, sin recompilar.
+      - name: Build wheel
         uses: PyO3/maturin-action@v1
         with:
           args: --release --out dist ${{ matrix.os == 'ubuntu-latest' && '--sdist' || '' }}
-          
+
+      - name: Smoke test the built wheel
+        shell: bash
+        run: |
+          python -m venv smoke
+          if [ -f smoke/bin/python ]; then PY=smoke/bin/python; else PY=smoke/Scripts/python; fi
+          $PY -m pip install --no-index --find-links dist py-dependency-mapper
+          $PY -I -c "import py_dependency_mapper; print('import ok')"
+
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
           name: wheels-${{ matrix.os }}
           path: dist
 
+  verify_wheels:
+    name: Verify wheel on ${{ matrix.os }} (Py ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    needs: [build_wheels]
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-14, macos-15-intel]
+        python-version: ['3.9', '3.13', '3.14', '3.15']
+
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          allow-prereleases: true
+
+      # Se instala el mismo wheel abi3 construido con 3.13 en cada versión de Python,
+      # sin acceso a PyPI ni al código fuente: así se comprueba que no hay que recompilar.
+      - name: Download wheel built for this platform
+        uses: actions/download-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: dist
+
+      - name: Install wheel and smoke test
+        shell: bash
+        run: |
+          python -m venv verify
+          if [ -f verify/bin/python ]; then PY=verify/bin/python; else PY=verify/Scripts/python; fi
+          $PY -m pip install --no-index --only-binary :all: --find-links dist py-dependency-mapper
+          $PY -I -c "import sys, py_dependency_mapper; print(sys.version.split()[0], 'import ok')"
+
   publish_to_pypi:
     name: Publish to PyPI
     runs-on: ubuntu-latest
     environment: release
-    needs: [build_wheels] 
-    
+    needs: [build_wheels, verify_wheels]
+
     steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
       - name: Download all wheels
         uses: actions/download-artifact@v4
         with:
-          path: dist
-          merge-multiple: true 
+          path: artifacts
+
+      - name: Collect and verify distributions
+        run: |
+          mkdir dist
+          python - <<'PY'
+          import pathlib, shutil, sys, zipfile
+          seen = {}
+          for f in sorted(pathlib.Path("artifacts").rglob("*")):
+              if not f.is_file():
+                  continue
+              if f.name in seen:
+                  sys.exit(f"Nombre duplicado entre runners: {f.name} ({seen[f.name]} y {f})")
+              seen[f.name] = f
+              if f.suffix == ".whl":
+                  bad = zipfile.ZipFile(f).testzip()
+                  if bad:
+                      sys.exit(f"Wheel corrupto {f.name}: {bad}")
+              shutil.copy(f, "dist" / pathlib.Path(f.name))
+          print("\n".join(sorted(seen)))
+          PY
 
       - name: Publish to PyPI
         uses: PyO3/maturin-action@v1
