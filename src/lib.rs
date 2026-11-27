@@ -110,7 +110,6 @@ impl<'a> PipAnalyzer<'a> {
             if let Ok(record_content) = fs::read_to_string(dist_dir.join("RECORD")) {
                 for line in record_content.lines() {
                     if let Some(path_str) = line.split(',').next() {
-                        if path_str.contains(".dist-info/") { continue; }
                         if let Some(top_level) = path_str.split('/').next() {
                             if top_level.is_empty() { continue; }
 
@@ -124,12 +123,21 @@ impl<'a> PipAnalyzer<'a> {
                 }
             }
 
+            // Se empaqueta siempre el .dist-info completo: algunas librerías lo necesitan en
+            // runtime (importlib.metadata, entry_points, pkg_resources). Se agrega aunque el
+            // RECORD no lo liste o no exista.
+            if let Some(dist_info_name) = actual_dir_name(&dist_dir) {
+                installed_artifact_paths.insert(dist_info_name);
+            }
+
             if let Ok(top_level_content) = fs::read_to_string(dist_dir.join("top_level.txt")) {
                 for name in top_level_content.lines() {
                     if !name.trim().is_empty() { importables.insert(name.trim().to_string()); }
                 }
             } else if !installed_artifact_paths.is_empty() {
                 for path in &installed_artifact_paths {
+                    // El .dist-info se empaqueta pero no es un módulo importable.
+                    if path.ends_with(".dist-info") { continue; }
                     let import_name = path.strip_suffix(".py").unwrap_or(path);
                     if !import_name.contains('/') {
                         importables.insert(import_name.to_string());
@@ -421,6 +429,26 @@ fn normalize_pkg_name(name: &str) -> String {
     name.to_lowercase().replace('-', "_")
 }
 
+/// Nombre real del directorio tal como está en disco. `find_dist_info_dir` prueba variantes de
+/// mayúsculas/minúsculas y en sistemas de archivos que no distinguen mayúsculas (macOS, Windows)
+/// cualquiera de ellas "existe", así que el nombre de la ruta encontrada puede no coincidir con
+/// el real. Si no se encuentra, se usa el de la ruta.
+fn actual_dir_name(dir: &Path) -> Option<String> {
+    let wanted = dir.file_name()?.to_str()?;
+    if let Some(parent) = dir.parent() {
+        if let Ok(entries) = fs::read_dir(parent) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                if let Ok(name) = entry.file_name().into_string() {
+                    if name.eq_ignore_ascii_case(wanted) {
+                        return Some(name);
+                    }
+                }
+            }
+        }
+    }
+    Some(wanted.to_string())
+}
+
 fn find_dist_info_dir(
     package_name: &str,
     version: &str,
@@ -626,6 +654,21 @@ mod tests {
     }
 
     #[test]
+    fn test_pip_analyzer_includes_dist_info_without_record() {
+        let dir = tempdir().unwrap();
+        let site_packages = dir.path();
+        fs::create_dir(site_packages.join("lonely_pkg-2.0.0.dist-info")).unwrap();
+
+        let mut analyzer = PipAnalyzer::new(site_packages);
+        let details = PackageDetails { version: "2.0.0".to_string(), dependencies: BTreeMap::new() };
+        analyzer.process_package("lonely-pkg", &details);
+
+        let info = analyzer.pip_package_info_map.get("lonely-pkg").unwrap();
+        assert_eq!(info.installed_paths, vec!["lonely_pkg-2.0.0.dist-info".to_string()]);
+        assert!(analyzer.import_to_pip_map.is_empty());
+    }
+
+    #[test]
     fn test_pip_analyzer_process_package_with_record() {
         let dir = tempdir().unwrap();
         let site_packages = dir.path();
@@ -651,7 +694,11 @@ mod tests {
         assert_eq!(info.version, "1.0.0");
         assert!(info.installed_paths.contains(&"test_pkg".to_string()));
         assert!(info.installed_paths.contains(&"bin/test-cli".to_string()));
-        assert!(!info.installed_paths.iter().any(|p| p.contains(".dist-info")));
+        // El .dist-info completo se empaqueta (una sola entrada: el directorio).
+        assert!(info.installed_paths.contains(&"test_pkg-1.0.0.dist-info".to_string()));
+        assert_eq!(info.installed_paths.iter().filter(|p| p.contains(".dist-info")).count(), 1, "{:?}", info.installed_paths);
+        // y no se confunde con un módulo importable.
+        assert!(!analyzer.import_to_pip_map.keys().any(|k| k.contains("dist-info")));
         assert_eq!(analyzer.import_to_pip_map.get("test_pkg"), Some(&"test-pkg".to_string()));
     }
 
