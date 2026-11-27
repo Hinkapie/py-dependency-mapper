@@ -543,7 +543,7 @@ mod tests {
     use tempfile::tempdir;
     use pyo3::types::PyDict;
    
-    fn mock_file(py: Python, imports: Vec<&str>) -> PyObject {
+    fn mock_file(py: Python, imports: Vec<&str>) -> Py<PyAny> {
         let file = ProjectFile {
             hash: "dummy".to_string(),
             project_imports: imports.iter().map(|s| s.to_string()).collect(),
@@ -555,9 +555,9 @@ mod tests {
 
     #[test]
     fn test_find_dependents_logic() {
-        pyo3::prepare_freethreaded_python();
+        Python::initialize();
         
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let map = PyDict::new(py);
 
             map.set_item("file_a.py", mock_file(py, vec!["file_b.py"])).unwrap();
@@ -731,9 +731,9 @@ mod tests {
 
     #[test]
     fn test_resolve_package_set_smart_prefix_logic() {
-        pyo3::prepare_freethreaded_python();
+        Python::initialize();
         
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let mut conditional_deps = HashMap::new();
             conditional_deps.insert("a.b".to_string(), vec!["package_extra".to_string()]);
 
@@ -775,9 +775,9 @@ mod tests {
 
     #[test]
     fn test_resolve_priority_import_map_vs_base_name() {
-        pyo3::prepare_freethreaded_python();
+        Python::initialize();
         
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let mut pip_info = HashMap::new();
             pip_info.insert("opencv-python".to_string(), PipPackageInfo {
                 version: "1.0".to_string(), installed_paths: vec![], dependencies: vec![] 

@@ -7,7 +7,7 @@ name = "py-dependency-mapper"
 dynamic = ["version"]
 description = "A high-performance Python dependency mapping tool written in Rust, powered by the Ruff parser."
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 authors = [
     { name = "Sebastian Hincapie", email = "shincapiem@gmail.com" }
 ]
@@ -20,7 +20,10 @@ classifiers = [
     "Operating System :: MacOS",
     "Operating System :: POSIX :: Linux",
     "Operating System :: Microsoft :: Windows",
-    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: Implementation :: CPython",
     "Programming Language :: Rust",
     "Topic :: Software Development :: Build Tools",
     "Topic :: Utilities",

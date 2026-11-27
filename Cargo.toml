@@ -1,6 +1,6 @@
 [package]
 name = "py-dependency-mapper"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -9,17 +9,17 @@ name = "py_dependency_mapper"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = "0.25.0"
+pyo3 = { version = "0.30.1", features = ["abi3-py310"] }
 hex = "0.4.3"
-sha2 = "0.10.9"
-walkdir = "2.5.0"
-toml = "0.9.7"
-serde = { version = "1.0.227", features = ["derive"] }
+sha2 = "0.11.2"
+walkdir = "2.5.1"
+toml = "1.2.3"
+serde = { version = "1.0.229", features = ["derive"] }
 
 # Ruff AST
-ruff_python_ast = { git = "https://github.com/astral-sh/ruff", package = "ruff_python_ast" }
-ruff_python_parser = { git = "https://github.com/astral-sh/ruff", package = "ruff_python_parser" }
-serde_json = "1.0.145"
+ruff_python_ast = { git = "https://github.com/astral-sh/ruff", rev = "c05df9647fbd20e2832120fae9b957a11b668e85", package = "ruff_python_ast" }
+ruff_python_parser = { git = "https://github.com/astral-sh/ruff", rev = "c05df9647fbd20e2832120fae9b957a11b668e85", package = "ruff_python_parser" }
+serde_json = "1.0.154"
 
 [dev-dependencies]
-tempfile = "3.23.0"
+tempfile = "3.27.0"
