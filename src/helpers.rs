@@ -45,9 +45,9 @@ pub(super) fn find_package_inits_in_path_seq(
     inits
 }
 
-/// `__init__.py` de los paquetes que contienen a `file` (de `source_root` hacia abajo, sin incluir
-/// al propio archivo). Python los ejecuta siempre que se importa el módulo, aunque el archivo no
-/// importe nada del proyecto, así que son dependencias implícitas de cualquier archivo.
+/// `__init__.py` files of the packages that contain `file` (from `source_root` downwards,
+/// excluding the file itself). Python runs them whenever the module is imported, even if the
+/// file imports nothing from the project, so they are implicit dependencies of any file.
 pub(super) fn own_package_inits(file: &Path, source_root: &Path) -> Vec<PathBuf> {
     let mut inits = Vec::new();
     let Ok(rel) = file.strip_prefix(source_root) else {
@@ -252,7 +252,7 @@ img = openpyxl.drawing.image.Image('test.png')
     fn test_imports_with_intermediate_alias() {
         let source_code = r#"
 import openpyxl.drawing as drawing_lib
-# Uso del alias para acceder a un sub-atributo
+# Use the alias to access a sub-attribute
 obj = drawing_lib.image.Image()
         "#;
         
@@ -288,25 +288,25 @@ obj = drawing_lib.image.Image()
         let root = dir.path();
         let a = root.join("a");
         let b = a.join("b");
-        let c = b.join("c"); // sin __init__.py (namespace)
+        let c = b.join("c"); // no __init__.py (namespace package)
         fs::create_dir_all(&c).unwrap();
         File::create(a.join("__init__.py")).unwrap();
         File::create(b.join("__init__.py")).unwrap();
         File::create(c.join("mod.py")).unwrap();
 
-        // Archivo suelto en la raíz: no tiene paquetes padre.
+        // A file at the root has no parent packages.
         assert!(own_package_inits(&root.join("top.py"), root).is_empty());
 
-        // Los padres con __init__.py, en orden, saltando carpetas que no lo tienen.
+        // Parents that have an __init__.py, in order, skipping folders that do not.
         let inits = own_package_inits(&c.join("mod.py"), root);
         assert_eq!(inits, vec![a.join("__init__.py"), b.join("__init__.py")]);
 
-        // Un __init__.py no se lista a sí mismo, pero sí a sus paquetes padre.
+        // An __init__.py does not list itself, but it does list its parent packages.
         let inits = own_package_inits(&b.join("__init__.py"), root);
         assert_eq!(inits, vec![a.join("__init__.py")]);
 
-        // Fuera de source_root no se devuelve nada.
-        assert!(own_package_inits(Path::new("/otra/ruta/x.py"), root).is_empty());
+        // Nothing is returned for files outside source_root.
+        assert!(own_package_inits(Path::new("/other/path/x.py"), root).is_empty());
     }
 
     #[test]

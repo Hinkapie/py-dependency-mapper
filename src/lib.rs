@@ -123,9 +123,9 @@ impl<'a> PipAnalyzer<'a> {
                 }
             }
 
-            // Se empaqueta siempre el .dist-info completo: algunas librerías lo necesitan en
-            // runtime (importlib.metadata, entry_points, pkg_resources). Se agrega aunque el
-            // RECORD no lo liste o no exista.
+            // The complete .dist-info is always packaged: some libraries need it at runtime
+            // (importlib.metadata, entry_points, pkg_resources). It is added even if RECORD
+            // does not list it or does not exist.
             if let Some(dist_info_name) = actual_dir_name(&dist_dir) {
                 installed_artifact_paths.insert(dist_info_name);
             }
@@ -136,7 +136,7 @@ impl<'a> PipAnalyzer<'a> {
                 }
             } else if !installed_artifact_paths.is_empty() {
                 for path in &installed_artifact_paths {
-                    // El .dist-info se empaqueta pero no es un módulo importable.
+                    // The .dist-info is packaged but it is not an importable module.
                     if path.ends_with(".dist-info") { continue; }
                     let import_name = path.strip_suffix(".py").unwrap_or(path);
                     if !import_name.contains('/') {
@@ -411,12 +411,12 @@ fn find_dependents(
     Ok(dependents)
 }
 
-/// Camino de imports más corto desde `source` hasta `target` (solo para depuración).
+/// Shortest chain of imports from `source` to `target` (for debugging only).
 ///
-/// `target` puede ser un archivo del mapa o el nombre de una librería de terceros (en ese caso
-/// el camino termina en el primer archivo que la importa). Devuelve la lista de archivos, desde
-/// `source`, o `None` si no hay camino. Es una función aparte: ninguna otra la llama, así que no
-/// afecta ni cuesta nada si no se usa.
+/// `target` can be a file of the map or the name of a third-party library (in that case the
+/// chain ends at the first file that imports it). Returns the list of files, starting at
+/// `source`, or `None` if there is no path. It is a separate function: nothing else calls it,
+/// so it has no effect and no cost unless it is used.
 #[pyfunction]
 fn explain_dependency(
     dependency_map: &Bound<'_, PyDict>,
@@ -439,8 +439,8 @@ fn explain_dependency(
     Ok(shortest_import_chain(&graph, source, target))
 }
 
-/// Búsqueda en anchura. Los vecinos se visitan en orden alfabético para que, entre caminos de la
-/// misma longitud, el resultado sea siempre el mismo.
+/// Breadth-first search. Neighbors are visited in alphabetical order so that, among chains of
+/// the same length, the result is always the same.
 fn shortest_import_chain(
     graph: &HashMap<String, (Vec<String>, Vec<String>)>,
     source: &str,
@@ -504,10 +504,10 @@ fn normalize_pkg_name(name: &str) -> String {
     name.to_lowercase().replace('-', "_")
 }
 
-/// Nombre real del directorio tal como está en disco. `find_dist_info_dir` prueba variantes de
-/// mayúsculas/minúsculas y en sistemas de archivos que no distinguen mayúsculas (macOS, Windows)
-/// cualquiera de ellas "existe", así que el nombre de la ruta encontrada puede no coincidir con
-/// el real. Si no se encuentra, se usa el de la ruta.
+/// Actual name of the directory as it is on disk. `find_dist_info_dir` tries upper/lower case
+/// variants and on case-insensitive filesystems (macOS, Windows) any of them "exists", so the
+/// name of the path found may not match the real one. If it is not found, the name of the
+/// path is used.
 fn actual_dir_name(dir: &Path) -> Option<String> {
     let wanted = dir.file_name()?.to_str()?;
     if let Some(parent) = dir.parent() {
@@ -585,8 +585,9 @@ fn find_dist_info_dir(
     None
 }
 
-/// `module` pertenece al proyecto si es uno de los prefijos o un submódulo suyo. Se exige el
-/// límite del punto: con el prefijo `bold`, `bold.x` es del proyecto pero `boldsign` no.
+/// `module` belongs to the project if it is one of the prefixes or one of its submodules. The
+/// dot boundary is required: with the prefix `bold`, `bold.x` is project code but `boldsign`
+/// is not.
 fn is_project_module(module: &str, prefixes: &[String]) -> bool {
     prefixes.iter().any(|prefix| {
         module == prefix
@@ -615,7 +616,7 @@ fn parse_file_imports(
         let mut stdlib_imports = HashSet::new();
         let mut third_party_imports = HashSet::new();
 
-        // Los __init__.py de las carpetas del propio archivo también son dependencias.
+        // The __init__.py files of the file's own folders are dependencies too.
         for p in helpers::own_package_inits(path, source_root_path) {
             resolved_project_imports.insert(p.to_string_lossy().into_owned());
         }
@@ -750,7 +751,7 @@ mod tests {
         fs::create_dir_all(&pkg).unwrap();
         File::create(root.join("bold").join("__init__.py")).unwrap();
         File::create(pkg.join("__init__.py")).unwrap();
-        // Entry point que no importa nada del proyecto.
+        // Entry point that imports nothing from the project.
         fs::write(pkg.join("lonely.py"), "import json\n").unwrap();
 
         let mut map = HashMap::new();
@@ -821,19 +822,19 @@ mod tests {
     #[test]
     fn test_shortest_import_chain_to_file() {
         let g = chain_graph();
-        // Dos caminos posibles a d.py; el más corto pasa por b.py (2 saltos) y no por a/c (3).
+        // Two possible paths to d.py; the shortest goes through b.py (2 hops), not a/c (3).
         assert_eq!(
             shortest_import_chain(&g, "handler.py", "d.py"),
             Some(vec!["handler.py".to_string(), "b.py".to_string(), "d.py".to_string()])
         );
-        // El archivo de partida es el destino.
+        // The starting file is the target.
         assert_eq!(shortest_import_chain(&g, "a.py", "a.py"), Some(vec!["a.py".to_string()]));
     }
 
     #[test]
     fn test_shortest_import_chain_to_third_party() {
         let g = chain_graph();
-        // Termina en el primer archivo que importa la librería.
+        // It ends at the first file that imports the library.
         assert_eq!(
             shortest_import_chain(&g, "handler.py", "requests"),
             Some(vec!["handler.py".to_string(), "a.py".to_string(), "c.py".to_string()])
@@ -848,8 +849,8 @@ mod tests {
     fn test_shortest_import_chain_no_path_and_cycles() {
         let mut g = chain_graph();
         assert_eq!(shortest_import_chain(&g, "handler.py", "lonely.py"), None);
-        assert_eq!(shortest_import_chain(&g, "handler.py", "no_existe"), None);
-        // Un ciclo no cuelga la búsqueda.
+        assert_eq!(shortest_import_chain(&g, "handler.py", "does_not_exist"), None);
+        // A cycle does not hang the search.
         g.get_mut("d.py").unwrap().0.push("handler.py".to_string());
         assert_eq!(shortest_import_chain(&g, "handler.py", "lonely.py"), None);
     }
@@ -910,10 +911,10 @@ mod tests {
         assert_eq!(info.version, "1.0.0");
         assert!(info.installed_paths.contains(&"test_pkg".to_string()));
         assert!(info.installed_paths.contains(&"bin/test-cli".to_string()));
-        // El .dist-info completo se empaqueta (una sola entrada: el directorio).
+        // The complete .dist-info is packaged (a single entry: the directory).
         assert!(info.installed_paths.contains(&"test_pkg-1.0.0.dist-info".to_string()));
         assert_eq!(info.installed_paths.iter().filter(|p| p.contains(".dist-info")).count(), 1, "{:?}", info.installed_paths);
-        // y no se confunde con un módulo importable.
+        // and it is not mistaken for an importable module.
         assert!(!analyzer.import_to_pip_map.keys().any(|k| k.contains("dist-info")));
         assert_eq!(analyzer.import_to_pip_map.get("test_pkg"), Some(&"test-pkg".to_string()));
     }

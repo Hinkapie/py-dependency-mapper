@@ -16,9 +16,9 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        # Una sola máquina por plataforma/arquitectura: si dos runners generan el mismo
-        # nombre de wheel (p. ej. dos runners macOS arm64), uno pisa al otro al
-        # unir los artefactos y se publica un wheel corrupto.
+        # One runner per platform/architecture: if two runners produce the same wheel name
+        # (e.g. two macOS arm64 runners), one overwrites the other when the artifacts are
+        # merged and a corrupt wheel gets published.
         os: [ubuntu-latest, windows-latest, macos-15, macos-15-intel]
 
     steps:
@@ -28,8 +28,8 @@ jobs:
         with:
           python-version: '3.13'
 
-      # La dependencia git de ruff trae rutas de más de 260 caracteres y en Windows el checkout
-      # de cargo falla con "path too long" si git no tiene activadas las rutas largas.
+      # The ruff git dependency has paths longer than 260 characters and on Windows cargo's
+      # checkout fails with "path too long" unless git has long paths enabled.
       - name: Enable long paths for git (Windows)
         if: runner.os == 'Windows'
         run: |
@@ -39,8 +39,8 @@ jobs:
       - name: Run Rust tests
         run: cargo test
 
-      # El wheel es abi3 (cp310-abi3): un único wheel por plataforma sirve para Python >= 3.10,
-      # incluidos 3.14 y 3.15, sin recompilar.
+      # The wheel is abi3 (cp310-abi3): a single wheel per platform works for Python >= 3.10,
+      # including 3.14 and 3.15, without recompiling.
       - name: Build wheel
         uses: PyO3/maturin-action@v1
         with:
@@ -76,8 +76,8 @@ jobs:
           python-version: ${{ matrix.python-version }}
           allow-prereleases: true
 
-      # Se instala el mismo wheel abi3 construido con 3.13 en cada versión de Python,
-      # sin acceso a PyPI ni al código fuente: así se comprueba que no hay que recompilar.
+      # The same abi3 wheel built with 3.13 is installed on every Python version, with no
+      # access to PyPI or to the source code: this checks that no recompiling is needed.
       - name: Download wheel built for this platform
         uses: actions/download-artifact@v8
         with:
@@ -118,12 +118,12 @@ jobs:
               if not f.is_file():
                   continue
               if f.name in seen:
-                  sys.exit(f"Nombre duplicado entre runners: {f.name} ({seen[f.name]} y {f})")
+                  sys.exit(f"Duplicate file name across runners: {f.name} ({seen[f.name]} and {f})")
               seen[f.name] = f
               if f.suffix == ".whl":
                   bad = zipfile.ZipFile(f).testzip()
                   if bad:
-                      sys.exit(f"Wheel corrupto {f.name}: {bad}")
+                      sys.exit(f"Corrupt wheel {f.name}: {bad}")
               shutil.copy(f, "dist" / pathlib.Path(f.name))
           print("\n".join(sorted(seen)))
           PY
