@@ -40,6 +40,10 @@ This makes it ideal for packaging (e.g., serverless deployments), dependency aud
 pip install py-dependency-mapper
 ```
 
+Requires Python **3.10 or newer**. The published wheels are built against the stable ABI (`abi3`),
+so a single wheel per platform works on every supported Python version (including 3.14 and 3.15)
+without recompiling.
+
 Basic Usage
 
 The workflow is designed to be efficient:
