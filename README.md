@@ -278,7 +278,7 @@ Scans the project and builds the dependency map.
 
 * **source_root**: Absolute path to the root of your source code.  
 
-* **project_module_prefixes**: A list of module prefixes to include in the analysis (e.g., `["my_app"]`).  
+* **project_module_prefixes**: A list of module prefixes to include in the analysis (e.g., `["my_app"]`). A module matches when it is the prefix itself or one of its submodules (`my_app` matches `my_app` and `my_app.utils`, but not `my_app_extra` or `my_application`), so similarly named third-party packages are not mistaken for project code.  
 
 * **include_paths**: A list of directories or files (relative to `source_root`) to begin the scan from.
 

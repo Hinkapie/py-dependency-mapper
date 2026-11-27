@@ -510,6 +510,16 @@ fn find_dist_info_dir(
     None
 }
 
+/// `module` belongs to the project if it is one of the prefixes or one of its submodules. The
+/// dot boundary is required: with the prefix `bold`, `bold.x` is project code but `boldsign`
+/// is not.
+fn is_project_module(module: &str, prefixes: &[String]) -> bool {
+    prefixes.iter().any(|prefix| {
+        module == prefix
+            || module.strip_prefix(prefix.as_str()).is_some_and(|rest| rest.starts_with('.'))
+    })
+}
+
 fn parse_file_imports(
     path: &Path,
     source_root_path: &Path,
@@ -536,7 +546,7 @@ fn parse_file_imports(
             for module in import_strings {
                 let base_module = module.split('.').next().unwrap_or(&module);
 
-                if project_module_prefixes.iter().any(|prefix| module.starts_with(prefix)) {
+                if is_project_module(&module, project_module_prefixes) {
                     for p in helpers::find_package_inits_in_path_seq(&module, source_root_path, package_init_cache) {
                         resolved_project_imports.insert(p.to_string_lossy().into_owned());
                     }
@@ -651,6 +661,37 @@ mod tests {
         
         let found = find_dist_info_dir("nonexistent", "1.0.0", site_packages);
         assert_eq!(found, None);
+    }
+
+    #[test]
+    fn test_is_project_module_respects_dot_boundary() {
+        let prefixes = vec!["bold".to_string(), "tests.bold".to_string()];
+        assert!(is_project_module("bold", &prefixes));
+        assert!(is_project_module("bold.a.util", &prefixes));
+        assert!(is_project_module("tests.bold.a", &prefixes));
+        assert!(!is_project_module("boldsign", &prefixes));
+        assert!(!is_project_module("bold_utils.x", &prefixes));
+        assert!(!is_project_module("tests.boldsign", &prefixes));
+        assert!(!is_project_module("tests", &prefixes));
+        assert!(!is_project_module("other.bold", &prefixes));
+    }
+
+    #[test]
+    fn test_parse_file_imports_prefix_does_not_capture_similar_names() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("bold")).unwrap();
+        File::create(root.join("bold").join("__init__.py")).unwrap();
+        fs::write(root.join("bold").join("main.py"), "import boldsign\nimport bold.main\n").unwrap();
+
+        let mut map = HashMap::new();
+        parse_file_imports(
+            &root.join("bold").join("main.py"), root, &["bold".to_string()], &HashSet::new(),
+            &mut map, &mut HashMap::new(), &mut HashMap::new(),
+        );
+        let file = map.get(&root.join("bold").join("main.py").to_string_lossy().into_owned()).unwrap();
+        assert!(file.third_party_imports.contains(&"boldsign".to_string()));
+        assert!(file.project_imports.iter().any(|p| p.ends_with("main.py")));
     }
 
     #[test]
