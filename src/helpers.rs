@@ -230,7 +230,7 @@ img = openpyxl.drawing.image.Image('test.png')
     fn test_imports_with_intermediate_alias() {
         let source_code = r#"
 import openpyxl.drawing as drawing_lib
-# Uso del alias para acceder a un sub-atributo
+# Use the alias to access a sub-attribute
 obj = drawing_lib.image.Image()
         "#;
         
