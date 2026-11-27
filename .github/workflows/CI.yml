@@ -26,6 +26,14 @@ jobs:
           python-version: ${{ matrix.python-version }}
           allow-prereleases: true
 
+      # La dependencia git de ruff trae rutas de más de 260 caracteres y en Windows el checkout
+      # de cargo falla con "path too long" si git no tiene activadas las rutas largas.
+      - name: Enable long paths for git (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          git config --system core.longpaths true
+          git config --global core.longpaths true
+
       - name: Run Rust tests
         run: cargo test
 
